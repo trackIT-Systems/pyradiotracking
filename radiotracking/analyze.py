@@ -142,6 +142,10 @@ class SignalAnalyzer(multiprocessing.Process):
         # setup sdr
         sdr = rtlsdr.RtlSdr(self.device_index)
         sdr.sample_rate = self.sample_rate
+        # update configured sample rate with technically possible rate compured by library
+        if self.sample_rate != sdr.sample_rate:
+            logger.info("adjusting sample rate according to hardware properties: %s", sdr.sample_rate)
+            self.sample_rate = sdr.sample_rate
         sdr.center_freq = self.center_freq
         sdr.gain = float(self.gain)
         sdr.set_agc_mode(False)
