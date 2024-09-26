@@ -9,6 +9,7 @@ import sys
 
 import cbor2 as cbor
 import paho.mqtt.client as mqtt
+
 from radiotracking.consume import uncborify
 
 parser = argparse.ArgumentParser(
@@ -29,7 +30,7 @@ parser.add_argument("--mqtt-password", help="MQTT password", type=str)
 def on_matched_cbor(client: mqtt.Client, userdata, message):
     # extract payload and meta data
     matched_list = cbor.loads(message.payload, tag_hook=uncborify)
-    station, _, _, _ = message.topic.split('/')
+    station, _, _, _ = message.topic.split("/")
 
     csv.writer(sys.stdout).writerow([station] + matched_list)
 

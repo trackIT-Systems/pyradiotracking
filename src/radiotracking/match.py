@@ -29,20 +29,23 @@ class SignalMatcher(AbstractConsumer):
         Queue to publish matched signals to.
     """
 
-    def __init__(self,
-                 device: List[str],
-                 matching_timeout_s: float,
-                 matching_time_diff_s: float,
-                 matching_bandwidth_hz: float,
-                 signal_queue: multiprocessing.Queue,
-                 matching_duration_diff_ms: float = None,
-                 **kwargs,
-                 ):
+    def __init__(
+        self,
+        device: List[str],
+        matching_timeout_s: float,
+        matching_time_diff_s: float,
+        matching_bandwidth_hz: float,
+        signal_queue: multiprocessing.Queue,
+        matching_duration_diff_ms: float | None = None,
+        **kwargs,
+    ):
         self.devices = device
         self.matching_timeout = datetime.timedelta(seconds=matching_timeout_s)
         self.matching_time_diff = datetime.timedelta(seconds=matching_time_diff_s)
         self.matching_bandwidth_hz = float(matching_bandwidth_hz)
-        self.matching_duration_diff = datetime.timedelta(milliseconds=matching_duration_diff_ms) if matching_duration_diff_ms else None
+        self.matching_duration_diff = (
+            datetime.timedelta(milliseconds=matching_duration_diff_ms) if matching_duration_diff_ms else None
+        )
         self.signal_queue = signal_queue
 
         self._matched: List[MatchingSignal] = []
@@ -71,7 +74,12 @@ class SignalMatcher(AbstractConsumer):
                 self.consume(msig)
                 continue
 
-            if msig.has_member(signal, bandwidth=self.matching_bandwidth_hz, time_diff=self.matching_time_diff, duration_diff=self.matching_duration_diff):
+            if msig.has_member(
+                signal,
+                bandwidth=self.matching_bandwidth_hz,
+                time_diff=self.matching_time_diff,
+                duration_diff=self.matching_duration_diff,
+            ):
                 msig.add_member(signal)
                 logger.debug(f"Found member of {msig}")
                 return

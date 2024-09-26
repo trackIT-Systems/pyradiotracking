@@ -26,8 +26,9 @@ logger = logging.getLogger("radiotracking")
 
 class Runner:
     """
-    A class to represent a running instance of pyradiotracking. 
+    A class to represent a running instance of radiotracking.
     """
+
     parser = ArgConfParser(
         prog="radiotracking",
         description="Detect signals of wildlife tracking systems with RTL SDR devices",
@@ -40,35 +41,65 @@ class Runner:
     parser.add_argument("--calibrate", help="enable calibration mode", action="store_true")
     parser.add_argument("--config", help="configuration file", default="etc/radiotracking.ini", type=str)
     parser.add_argument("--station", help="name of the station", default=platform.node(), type=str)
-    parser.add_argument("--schedule", help="specify a schedule of operation, e.g. 18:00-18:59:59", type=str, default=[], nargs="*")
+    parser.add_argument(
+        "--schedule", help="specify a schedule of operation, e.g. 18:00-18:59:59", type=str, default=[], nargs="*"
+    )
 
     # sdr / sampling options
     sdr_options = parser.add_argument_group("rtl-sdr")
     sdr_options.add_argument("-d", "--device", help="device indexes or names", default=["0"], nargs="*", type=str)
-    sdr_options.add_argument("-c", "--calibration", help="device calibration gain (dB)", default=[], nargs="*", type=float)
-    sdr_options.add_argument("-f", "--center-freq", help="center frequency to tune to (Hz)", default=150150000, type=int)
+    sdr_options.add_argument(
+        "-c", "--calibration", help="device calibration gain (dB)", default=[], nargs="*", type=float
+    )
+    sdr_options.add_argument(
+        "-f", "--center-freq", help="center frequency to tune to (Hz)", default=150150000, type=int
+    )
     sdr_options.add_argument("-s", "--sample-rate", help="sample rate (Hz)", default=300000, type=int)
-    sdr_options.add_argument("-b", "--sdr-callback-length", help="number of samples to read per batch", default=None, type=int)
+    sdr_options.add_argument(
+        "-b", "--sdr-callback-length", help="number of samples to read per batch", default=None, type=int
+    )
     sdr_options.add_argument("-g", "--gain", help="gain, supported levels 0.0 - 49.6", default="49.6", type=float)
     sdr_options.add_argument("--sdr-max-restart", help="maximal restart count per SDR device", default=3, type=int)
-    sdr_options.add_argument("--sdr-timeout-s", help="Time after which an SDR device is considered unrepsonsive (s)", default=2, type=int)
-    sdr_options.add_argument("--state-update-s", help="interval in which state update messages should be recorded (s)", default=300, type=int)
+    sdr_options.add_argument(
+        "--sdr-timeout-s", help="Time after which an SDR device is considered unrepsonsive (s)", default=2, type=int
+    )
+    sdr_options.add_argument(
+        "--state-update-s", help="interval in which state update messages should be recorded (s)", default=300, type=int
+    )
 
     # analysis options
     analysis_options = parser.add_argument_group("analysis")
     analysis_options.add_argument("-n", "--fft-nperseg", help="fft number of samples", default=256, type=int)
-    analysis_options.add_argument("-w", "--fft-window", help="fft window function", type=literal_eval, default="'hamming'")
-    analysis_options.add_argument("-t", "--signal-threshold-dbw", help="lower limit for signal intensity (dBW)", type=float, default=-90.0)
-    analysis_options.add_argument("-r", "--snr-threshold-db", help="lower limit for signal-to-noise ratio (dB)", type=float, default=5.0)
-    analysis_options.add_argument("-l", "--signal-min-duration-ms", help="lower limit for signal duration (ms)", type=float, default=8)
-    analysis_options.add_argument("-u", "--signal-max-duration-ms", help="upper limit for signal duration (ms)", type=float, default=40)
+    analysis_options.add_argument(
+        "-w", "--fft-window", help="fft window function", type=literal_eval, default="'hamming'"
+    )
+    analysis_options.add_argument(
+        "-t", "--signal-threshold-dbw", help="lower limit for signal intensity (dBW)", type=float, default=-90.0
+    )
+    analysis_options.add_argument(
+        "-r", "--snr-threshold-db", help="lower limit for signal-to-noise ratio (dB)", type=float, default=5.0
+    )
+    analysis_options.add_argument(
+        "-l", "--signal-min-duration-ms", help="lower limit for signal duration (ms)", type=float, default=8
+    )
+    analysis_options.add_argument(
+        "-u", "--signal-max-duration-ms", help="upper limit for signal duration (ms)", type=float, default=40
+    )
 
     # analysis options
     matching_options = parser.add_argument_group("matching")
-    matching_options.add_argument("--matching-timeout-s", help="timeout for adding signals to a match group", type=float, default=2.0)
-    matching_options.add_argument("-mt", "--matching-time-diff-s", help="error margin for timestamp matching (s)", type=float, default=0)
-    matching_options.add_argument("-mb", "--matching-bandwidth-hz", help="error margin for frequency (Hz)", type=float, default=0)
-    matching_options.add_argument("-md", "--matching-duration-diff-ms", help="error margin for duration (ms)", type=float)
+    matching_options.add_argument(
+        "--matching-timeout-s", help="timeout for adding signals to a match group", type=float, default=2.0
+    )
+    matching_options.add_argument(
+        "-mt", "--matching-time-diff-s", help="error margin for timestamp matching (s)", type=float, default=0
+    )
+    matching_options.add_argument(
+        "-mb", "--matching-bandwidth-hz", help="error margin for frequency (Hz)", type=float, default=0
+    )
+    matching_options.add_argument(
+        "-md", "--matching-duration-diff-ms", help="error margin for duration (ms)", type=float
+    )
 
     # data publishing options
     publish_options = parser.add_argument_group("publish")
@@ -82,16 +113,22 @@ class Runner:
     publish_options.add_argument("--mqtt-port", help="port of mqtt broker", default=1883, type=int)
     publish_options.add_argument("--mqtt-qos", help="mqtt quality of service level (0, 1, 2)", default=1, type=int)
     publish_options.add_argument("--mqtt-keepalive", help="timeout for mqtt connection (s)", default=3600, type=int)
-    publish_options.add_argument("-mv", "--mqtt-verbose", help="increase mqtt logging verbosity", action="count", default=0)
+    publish_options.add_argument(
+        "-mv", "--mqtt-verbose", help="increase mqtt logging verbosity", action="count", default=0
+    )
 
     # dashboard options
     dashboard_options = parser.add_argument_group("dashboard")
     dashboard_options.add_argument("--dashboard", help="enable web-dashboard", action="store_true")
-    dashboard_options.add_argument("--dashboard-host", help="hostname to bind the dashboard to", default="localhost", type=str)
+    dashboard_options.add_argument(
+        "--dashboard-host", help="hostname to bind the dashboard to", default="localhost", type=str
+    )
     dashboard_options.add_argument("--dashboard-port", help="port to bind the dashboard to", default=8050, type=int)
     dashboard_options.add_argument("--dashboard-signals", help="number of signals to present", default=100, type=int)
 
-    def create_and_start(self, device: str, calibration_db: float, sdr_max_restart: int = None) -> SignalAnalyzer:
+    def create_and_start(
+        self, device: str, calibration_db: float, sdr_max_restart: int | None = None
+    ) -> SignalAnalyzer:
         """
         Creates, starts and returns a signal analyzer thread.
 
@@ -144,7 +181,16 @@ class Runner:
         Stop all analyzer threads.
         """
         logger.info("Stopping all analyzers")
-        [a.signal_queue.put(StateMessage(a.device, datetime.datetime.fromtimestamp(a.last_data_ts.value, tz=pytz.utc), StateMessage.State.STOPPED)) for a in self.analyzers]
+        [
+            a.signal_queue.put(
+                StateMessage(
+                    a.device,
+                    datetime.datetime.fromtimestamp(a.last_data_ts.value, tz=pytz.utc),
+                    StateMessage.State.STOPPED,
+                )
+            )
+            for a in self.analyzers
+        ]
         [a.kill() for a in self.analyzers]
         [a.join() for a in self.analyzers]
         self.analyzers = []
@@ -165,12 +211,22 @@ class Runner:
 
                 # check if last data timestamp is within timeout
                 if analyzer.last_data_ts.value > datetime.datetime.timestamp(now) - analyzer.sdr_timeout_s:
-                    logger.info(f"SDR {analyzer.device} received last data {datetime.datetime.fromtimestamp(analyzer.last_data_ts.value)}")
+                    logger.info(
+                        f"SDR {analyzer.device} received last data {datetime.datetime.fromtimestamp(analyzer.last_data_ts.value)}"
+                    )
                     continue
 
                 # kill timed out analyzer
-                logger.warning(f"SDR {analyzer.device} received last data {datetime.datetime.fromtimestamp(analyzer.last_data_ts.value)}; timed out.")
-                analyzer.signal_queue.put(StateMessage(analyzer.device, datetime.datetime.fromtimestamp(analyzer.last_data_ts.value, tz=pytz.utc), StateMessage.State.STOPPED))
+                logger.warning(
+                    f"SDR {analyzer.device} received last data {datetime.datetime.fromtimestamp(analyzer.last_data_ts.value)}; timed out."
+                )
+                analyzer.signal_queue.put(
+                    StateMessage(
+                        analyzer.device,
+                        datetime.datetime.fromtimestamp(analyzer.last_data_ts.value, tz=pytz.utc),
+                        StateMessage.State.STOPPED,
+                    )
+                )
                 analyzer.kill()
                 analyzer.join()
 
@@ -325,6 +381,10 @@ class Runner:
         exit(0)
 
 
-if __name__ == "__main__":
+def main():
     runner = Runner()
     runner.main()
+
+
+if __name__ == "__main__":
+    main()

@@ -3,7 +3,7 @@ import sys
 from argparse import ArgumentParser, Namespace
 from ast import literal_eval
 from configparser import ConfigParser
-from typing import Any, Iterable, List, Optional, Sequence, Text, TextIO, Tuple, Dict
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Text, TextIO, Tuple
 
 
 class ArgConfParser(ArgumentParser):
@@ -20,9 +20,11 @@ class ArgConfParser(ArgumentParser):
         super().__init__(*args, **kwargs)
         self.config_dest = config_dest
 
-    def parse_known_args(self, args: Optional[Sequence[Text]] = None, namespace: Optional[Namespace] = None) -> Tuple[Namespace, List[str]]:
+    def parse_known_args(
+        self, args: Optional[Sequence[Text]] = None, namespace: Optional[Namespace] = None
+    ) -> Tuple[Namespace, List[str]]:
         """
-        Initialize defaults according to the parser, update with config file and then parse the arguments. 
+        Initialize defaults according to the parser, update with config file and then parse the arguments.
 
         Parameters
         ----------

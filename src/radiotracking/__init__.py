@@ -26,6 +26,7 @@ class AbstractMessage(ABC):
     """
     Abstract class for a message.
     """
+
     header: List[str]
     """Header for the as_list() method."""
 
@@ -64,11 +65,12 @@ class StateMessage(AbstractMessage):
         RUNNING = 1
         STARTED = 2
 
-    def __init__(self,
-                 device: str,
-                 ts: datetime.datetime,
-                 state: Union[State, int, str],
-                 ):
+    def __init__(
+        self,
+        device: str,
+        ts: datetime.datetime,
+        state: Union[State, int, str],
+    ):
         super().__init__()
 
         self.device: str = device
@@ -113,11 +115,11 @@ class Signal(AbstractSignal):
 
     Parameters
     ----------
-    device: str 
+    device: str
         The device that detected the signal.
     ts: typing.Union[datetime.datetime, str]
         The timestamp of the signal.
-    frequency: typing.Union[float, str] 
+    frequency: typing.Union[float, str]
         The frequency of the signal.
     duration: typing.Union[datetime.timedelta, float, str]
         The duration of the signal.
@@ -241,7 +243,7 @@ class MatchedSignal(AbstractSignal):
         else:
             self.duration = datetime.timedelta(seconds=float(duration))
 
-        self._avgs: List[float] = []
+        self._avgs: List[float | None] = []
         for avg in avgs:
             try:
                 self._avgs.append(float(avg))
@@ -260,12 +262,7 @@ class MatchedSignal(AbstractSignal):
 
     @property
     def as_list(self) -> List:
-        return [
-            self.ts,
-            self.frequency,
-            self.duration,
-            *self._avgs
-        ]
+        return [self.ts, self.frequency, self.duration, *self._avgs]
 
     def __repr__(self) -> str:
         avgs_str = ", ".join([repr(avg) for avg in self._avgs])
@@ -324,7 +321,7 @@ class MatchingSignal(MatchedSignal):
         return statistics.median([sig.frequency for sig in self._sigs.values()])
 
     @property
-    def _avgs(self) -> List[float]:
+    def _avgs(self) -> List[float | None]:
         """
         Average powers of the matching signal.
 
@@ -334,12 +331,13 @@ class MatchingSignal(MatchedSignal):
         """
         return [self._sigs[d].avg if d in self._sigs else None for d in self.devices]
 
-    def has_member(self,
-                   sig: Signal,
-                   time_diff: datetime.timedelta = datetime.timedelta(seconds=0),
-                   bandwidth: float = 0,
-                   duration_diff: Optional[datetime.timedelta] = None,
-                   ) -> bool:
+    def has_member(
+        self,
+        sig: Signal,
+        time_diff: datetime.timedelta = datetime.timedelta(seconds=0),
+        bandwidth: float = 0,
+        duration_diff: Optional[datetime.timedelta] = None,
+    ) -> bool:
         """
         Checks if a Signal is part of this matching signal.
 

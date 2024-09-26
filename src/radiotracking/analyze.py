@@ -4,6 +4,7 @@ import multiprocessing
 import signal
 import sys
 import time
+from multiprocessing.sharedctypes import Synchronized
 from typing import List, Union
 
 import numpy as np
@@ -11,7 +12,6 @@ import pytz
 import rtlsdr
 import scipy.signal
 
-import radiotracking
 from radiotracking import Signal, StateMessage, dB, from_dB
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ class SignalAnalyzer(multiprocessing.Process):
         state_update_s: int,
         sdr_callback_length: int,
         signal_queue: multiprocessing.Queue,
-        last_data_ts: multiprocessing.Value,
+        last_data_ts: Synchronized[float],
         **kwargs,
     ):
         super().__init__()
@@ -92,7 +92,7 @@ class SignalAnalyzer(multiprocessing.Process):
         except ValueError:
             # try to use --device as serial numbers
             try:
-                self.device_index = rtlsdr.RtlSdr.get_device_index_by_serial(device)
+                self.device_index = rtlsdr.rtlsdr.RtlSdr.get_device_index_by_serial(device)
                 logger.info(f"Using '{device}' as serial number (index: {self.device_index}).")
             except rtlsdr.rtlsdr.LibUSBError:
                 logger.warning(f"Device '{device}' could was not found, aborting.")
@@ -125,7 +125,7 @@ class SignalAnalyzer(multiprocessing.Process):
         self.signal_queue = signal_queue
         self.last_data_ts = last_data_ts
 
-        self._spectrogram_last = None
+        self._spectrogram_last: None | np.ndarray = None
         self._ts = None
 
     def run(self):
@@ -140,7 +140,7 @@ class SignalAnalyzer(multiprocessing.Process):
         logging.basicConfig(level=logging_level)
 
         # setup sdr
-        sdr = rtlsdr.RtlSdr(self.device_index)
+        sdr = rtlsdr.rtlsdr.RtlSdr(self.device_index)
         sdr.sample_rate = self.sample_rate
         # update configured sample rate with technically possible rate compured by library
         if self.sample_rate != sdr.sample_rate:
@@ -172,7 +172,11 @@ class SignalAnalyzer(multiprocessing.Process):
             The stack frame.
         """
         if sig == signal.SIGALRM:
-            logger.warning("SDR %s received SIGALRM, last data received %s ago.", self.device, datetime.datetime.now() - self._ts if self._ts else '(no signal yet)')
+            logger.warning(
+                "SDR %s received SIGALRM, last data received %s ago.",
+                self.device,
+                datetime.datetime.now() - self._ts if self._ts else "(no signal yet)",
+            )
         elif sig == signal.SIGTERM:
             logger.warning("SDR %s received SIGTERM, terminating.", self.device)
         elif sig == signal.SIGINT:
@@ -228,7 +232,9 @@ class SignalAnalyzer(multiprocessing.Process):
 
         # warn on clock drift and resync
         if clock_drift > 2 * buffer_len_dt.total_seconds():
-            logger.warning(f"SDR {self.device} total clock drift ({clock_drift:.5f} s) is larger than two blocks, signal detection is degraded. Terminating...")
+            logger.warning(
+                f"SDR {self.device} total clock drift ({clock_drift:.5f} s) is larger than two blocks, signal detection is degraded. Terminating..."
+            )
             self.update_state(datetime.datetime.now(), StateMessage.State.STOPPED)
             self.sdr.cancel_read_async()
 
@@ -331,7 +337,9 @@ class SignalAnalyzer(multiprocessing.Process):
 
         return [sig for sig, shadow in zip(signals, signals_status) if shadow is None]
 
-    def extract_signals(self, freqs: np.ndarray, times: np.ndarray, spectrogram: np.ndarray, ts_start: datetime.datetime) -> List[Signal]:
+    def extract_signals(
+        self, freqs: np.ndarray, times: np.ndarray, spectrogram: np.ndarray, ts_start: datetime.datetime
+    ) -> List[Signal]:
         """Extract plateaus from spectogram data.
 
         Parameters
@@ -433,15 +441,17 @@ class SignalAnalyzer(multiprocessing.Process):
                 if duration_s < self.signal_min_duration:
                     continue
                 if duration_s > self.signal_max_duration:
-                    logger.debug(f"signal duration too long ({duration_s * 1000} > {self.signal_max_duration*1000} ms), skipping")
+                    logger.debug(
+                        f"signal duration too long ({duration_s * 1000} > {self.signal_max_duration*1000} ms), skipping"
+                    )
                     continue
                 ts = ts_start + datetime.timedelta(seconds=start_dt)
 
                 # extract data
                 if start < 0:
-                    data = np.concatenate((self._spectrogram_last[fi][start:], fft[: end]))
+                    data = np.concatenate((self._spectrogram_last[fi][start:], fft[:end]))
                 else:
-                    data = fft[start: end]
+                    data = fft[start:end]
 
                 max_dBW = dB(np.max(data)) - self.calibration_db
                 avg = np.mean(data)
@@ -450,7 +460,9 @@ class SignalAnalyzer(multiprocessing.Process):
                 noise_dBW = dB(freq_avg)
                 snr_dB = dB(avg / freq_avg)
 
-                signal = Signal(self.device, ts.astimezone(pytz.utc), freq, duration, max_dBW, avg_dBW, std_dB, noise_dBW, snr_dB)
+                signal = Signal(
+                    self.device, ts.astimezone(pytz.utc), freq, duration, max_dBW, avg_dBW, std_dB, noise_dBW, snr_dB
+                )
                 signals.append(signal)
 
         return signals

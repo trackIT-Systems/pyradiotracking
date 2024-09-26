@@ -1,7 +1,0 @@
-pyrtlsdr
-scipy
-numpy
-paho-mqtt
-cbor2
-pytz
-schedule

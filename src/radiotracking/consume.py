@@ -23,10 +23,8 @@ logger = logging.getLogger(__name__)
 def jsonify(o):
     """Helper function to convert non-native types to JSON serializable values."""
     if isinstance(o, datetime.datetime):
-        o: datetime.datetime
         return o.isoformat()
     if isinstance(o, datetime.timedelta):
-        o: datetime.timedelta
         return o.total_seconds()
 
     raise TypeError(f"Object of type {type(o)} is not JSON serializable")
@@ -35,7 +33,6 @@ def jsonify(o):
 def cborify(encoder, o):
     """Helper function to convert non-native types to CBOR serializable values."""
     if isinstance(o, datetime.timedelta):
-        o: datetime.timedelta
         encoder.encode(cbor.CBORTag(1337, o.total_seconds()))
 
 
@@ -81,7 +78,7 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
         The verbosity level for log messages to be forwarded.
     prefix: str
         The prefix to use for the MQTT topics.
-        """
+    """
 
     def __init__(
         self,
@@ -120,7 +117,9 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
 
         # publish csv
         csv_io = StringIO()
-        csv.writer(csv_io, dialect="excel", delimiter=";").writerow([record.levelname, record.name, self.format(record)])
+        csv.writer(csv_io, dialect="excel", delimiter=";").writerow(
+            [record.levelname, record.name, self.format(record)]
+        )
         payload_csv = csv_io.getvalue().splitlines()[0]
         self.client.publish(path + "/csv", payload_csv, qos=self.mqtt_qos)
 
@@ -159,7 +158,9 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
         )
         self.client.publish(path + "/cbor", payload_cbor, qos=self.mqtt_qos)
 
-        logger.debug(f"published via mqtt, json: {len(payload_json)}, csv: {len(payload_csv)}, cbor: {len(payload_cbor)}")
+        logger.debug(
+            f"published via mqtt, json: {len(payload_json)}, csv: {len(payload_csv)}, cbor: {len(payload_cbor)}"
+        )
 
 
 class CSVConsumer(AbstractConsumer):
@@ -176,11 +177,12 @@ class CSVConsumer(AbstractConsumer):
         The header of the CSV file.
     """
 
-    def __init__(self,
-                 out,
-                 cls: Type[AbstractMessage],
-                 header: List[str] = None,
-                 ):
+    def __init__(
+        self,
+        out,
+        cls: Type[AbstractMessage],
+        header: List[str] | None = None,
+    ):
         self.out = out
         self.cls = cls
 
@@ -224,17 +226,18 @@ class ProcessConnector:
         Whether to publish data via MQTT.
     """
 
-    def __init__(self,
-                 station: str,
-                 device: List[str],
-                 calibrate: bool,
-                 sig_stdout: bool,
-                 match_stdout: bool,
-                 path: str,
-                 csv: bool,
-                 mqtt: bool,
-                 **kwargs,
-                 ):
+    def __init__(
+        self,
+        station: str,
+        device: List[str],
+        calibrate: bool,
+        sig_stdout: bool,
+        match_stdout: bool,
+        path: str,
+        csv: bool,
+        mqtt: bool,
+        **kwargs,
+    ):
         self.q: multiprocessing.Queue[AbstractMessage] = multiprocessing.Queue()
         self.consumers: List[AbstractConsumer] = []
         """List of consumers data is published to."""
@@ -264,13 +267,17 @@ class ProcessConnector:
             # create consumer for matched signals
             matched_csv_path = f"{path}/{station}_{ts:%Y-%m-%dT%H%M%S}-matched"
             matched_csv_path += "_calibration" if calibrate else ""
-            matched_csv_consumer = CSVConsumer(open(f"{matched_csv_path}.csv", "w"), cls=MatchingSignal, header=MatchingSignal(device).header)
+            matched_csv_consumer = CSVConsumer(
+                open(f"{matched_csv_path}.csv", "w"), cls=MatchingSignal, header=MatchingSignal(device).header
+            )
             self.consumers.append(matched_csv_consumer)
 
             # create consumer for state information
             state_csv_path = f"{path}/{station}_{ts:%Y-%m-%dT%H%M%S}-state"
             state_csv_path += "_calibration" if calibrate else ""
-            state_csv_consumer = CSVConsumer(open(f"{state_csv_path}.csv", "w"), cls=StateMessage, header=StateMessage.header)
+            state_csv_consumer = CSVConsumer(
+                open(f"{state_csv_path}.csv", "w"), cls=StateMessage, header=StateMessage.header
+            )
             self.consumers.append(state_csv_consumer)
 
         # add mqtt consumer (only if not in calibration)

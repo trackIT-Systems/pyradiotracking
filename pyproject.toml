@@ -1,0 +1,32 @@
+[project]
+name = "radiotracking"
+version = "0.2.0"
+description = "Detect signals of VHF wildlife tags using rtl-sdr"
+authors = [
+    {name = "Jonas Höchst", email = "git@jonashoechst.de"},
+]
+dependencies = [
+    "pyrtlsdr>=0.3.0",
+    "scipy>=1.10.1",
+    "numpy>=1.24.2, <2",
+    "paho-mqtt>=1.6.1, <2",
+    "cbor2>=5.6.3",
+    "pytz>=2022.7.1",
+    "schedule>=1.2.1",
+    "setuptools>=75.1.0",
+    "dash>=2.16.1",
+    "matplotlib>=3.6.3",
+]
+requires-python = ">=3.11"
+readme = "README.md"
+license = {text = "GPL-3.0"}
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm]
+distribution = true
+
+[project.scripts]
+radiotracking = "radiotracking.__main__:main"
