@@ -78,7 +78,7 @@ class SignalAnalyzer(multiprocessing.Process):
         state_update_s: int,
         sdr_callback_length: int,
         signal_queue: multiprocessing.Queue,
-        last_data_ts: Synchronized[float],
+        last_data_ts: Synchronized,
         **kwargs,
     ):
         super().__init__()
