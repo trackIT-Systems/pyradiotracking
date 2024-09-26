@@ -18,7 +18,7 @@ dependencies = [
     "matplotlib>=3.6.3",
 ]
 requires-python = ">=3.11"
-readme = "README.md"
+readme = "Readme.md"
 license = {text = "GPL-3.0"}
 
 [build-system]
