@@ -147,8 +147,15 @@ class SignalAnalyzer(multiprocessing.Process):
             logger.info("adjusting sample rate according to hardware properties: %s", sdr.sample_rate)
             self.sample_rate = sdr.sample_rate
         sdr.center_freq = self.center_freq
-        sdr.gain = float(self.gain)
         sdr.set_agc_mode(False)
+
+        try:
+            rtlsdr.librtlsdr.rtlsdr_set_tuner_gain_ext(sdr.dev_p, 15, 14, 15)
+            logger.warning("Gain set to maximum (%s)", sdr.gain)
+        except AttributeError:
+            sdr.gain = float(self.gain)
+            logger.warning("rtlsdr_set_tuner_gain_ext not available, set gain to %s", sdr.gain)
+
         self.sdr = sdr
 
         # initialize state
