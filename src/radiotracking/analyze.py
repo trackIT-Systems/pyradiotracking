@@ -66,6 +66,9 @@ class SignalAnalyzer(multiprocessing.Process):
         sample_rate: int,
         center_freq: int,
         gain: float,
+        lna_gain: int,
+        mixer_gain: int,
+        vga_gain: int,
         fft_nperseg: int,
         fft_window,
         signal_min_duration_ms: float,
@@ -104,6 +107,10 @@ class SignalAnalyzer(multiprocessing.Process):
             self.gain = float(gain)
         except ValueError:
             self.gain = gain
+
+        self.lna_gain = int(lna_gain)
+        self.mixer_gain = int(mixer_gain)
+        self.vga_gain = int(vga_gain)
 
         if sdr_callback_length is None:
             sdr_callback_length = sample_rate
@@ -150,11 +157,22 @@ class SignalAnalyzer(multiprocessing.Process):
         sdr.set_agc_mode(False)
 
         try:
-            rtlsdr.librtlsdr.rtlsdr_set_tuner_gain_ext(sdr.dev_p, 15, 14, 15)
-            logger.warning("Gain set to maximum (%s)", sdr.gain)
-        except AttributeError:
+            if self.lna_gain not in range(0, 16):
+                raise ValueError("lna_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_lna_gain_steps[]", self.lna_gain)
+            if self.mixer_gain not in range(0, 16):
+                raise ValueError("mixer_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_mixer_gain_steps[]", self.mixer_gain)
+            if self.vga_gain not in range(0, 16):
+                raise ValueError("vga_gain index %s not in 0 .. 15: 0 == -12 dB; 15 == 40.5 dB; => 3.5 dB/step", self.vga_gain)
+            
+            ret = rtlsdr.librtlsdr.rtlsdr_set_tuner_gain_ext(sdr.dev_p, self.lna_gain, self.mixer_gain, self.lna_gain)
+            if ret == 0:
+                logger.warning("Gain set manually (gain=%s, ret=%s)", sdr.gain, ret)
+            else:
+                raise RuntimeError("Failed setting gain using rtlsdr_set_tuner_gain_ext (%s)", ret)
+        except (AttributeError, ValueError, RuntimeError) as err:
+            logger.warning("Error setting gain manually: %s", err)
             sdr.gain = float(self.gain)
-            logger.warning("rtlsdr_set_tuner_gain_ext not available, set gain to %s", sdr.gain)
+            logger.warning("rtlsdr_set_tuner_gain_ext failed, set gain to %s", sdr.gain)
 
         self.sdr = sdr
 
