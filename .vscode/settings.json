@@ -14,6 +14,6 @@
     ],
     "python.linting.mypyEnabled": true,
     "editor.codeActionsOnSave": {
-        "source.organizeImports": true
+        "source.organizeImports": "explicit"
     },
 }
