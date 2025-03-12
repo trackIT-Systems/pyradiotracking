@@ -144,7 +144,7 @@ class SignalAnalyzer(multiprocessing.Process):
             )
 
         total_gain = 0
-        for i in range(self.lna_gain):
+        for i in range(self.lna_gain + 1):
             total_gain += r82xx_lna_gain_steps[i]
 
         return total_gain / 10
@@ -158,7 +158,7 @@ class SignalAnalyzer(multiprocessing.Process):
             )
 
         total_gain = 0
-        for i in range(self.mixer_gain):
+        for i in range(self.mixer_gain + 1):
             total_gain += r82xx_mixer_gain_steps[i]
 
         return total_gain / 10
@@ -172,7 +172,7 @@ class SignalAnalyzer(multiprocessing.Process):
             )
 
         total_gain = 0
-        for i in range(self.vga_gain):
+        for i in range(self.vga_gain + 1):
             total_gain += r82xx_vga_gain_steps[i]
 
         return total_gain / 10
@@ -206,7 +206,6 @@ class SignalAnalyzer(multiprocessing.Process):
             logger.info("adjusting sample rate according to hardware properties: %s", sdr.sample_rate)
             self.sample_rate = sdr.sample_rate
         sdr.center_freq = self.center_freq
-        sdr.set_agc_mode(False)
 
         try:
             if self.lna_gain not in range(0, 16):
@@ -223,13 +222,15 @@ class SignalAnalyzer(multiprocessing.Process):
                 raise ValueError(
                     "vga_gain index %s not in 0 .. 15: 0 == -12 dB; 15 == 40.5 dB; => 3.5 dB/step", self.vga_gain
                 )
+            sdr.set_manual_gain_enabled(True)
+            sdr.set_agc_mode(False)
 
             ret = rtlsdr.librtlsdr.rtlsdr_set_tuner_gain_ext(sdr.dev_p, self.lna_gain, self.mixer_gain, self.vga_gain)
             if ret == 0:
                 self.gain = self._r82xx_get_gain()
 
                 logger.warning(
-                    "Gain set manually (lna_index=%s, mixer_index=%s, vga_index=%s, gain=%s, lna_gain: %s, mixer_gain: %s, vga_gain: %s)",
+                    "Gain set manually (lna_index=%s, mixer_index=%s, vga_index=%s, gain=%s, lna_gain: %s, mixer_gain: %s, vga_gain: %s, sdr.gain: %s)",
                     self.lna_gain,
                     self.mixer_gain,
                     self.vga_gain,
@@ -237,6 +238,7 @@ class SignalAnalyzer(multiprocessing.Process):
                     self._r82xx_get_lna_gain(),
                     self._r82xx_get_mixer_gain(),
                     self._r82xx_get_vga_gain(),
+                    sdr.gain,
                 )
             else:
                 raise RuntimeError("Failed setting gain using rtlsdr_set_tuner_gain_ext (%s)", ret)
