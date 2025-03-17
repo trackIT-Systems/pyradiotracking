@@ -152,8 +152,6 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
         # publish cbor
         payload_cbor = cbor.dumps(
             signal.as_list,
-            timezone=datetime.timezone.utc,
-            datetime_as_timestamp=True,
             default=cborify,
         )
         self.client.publish(path + "/cbor", payload_cbor, qos=self.mqtt_qos)

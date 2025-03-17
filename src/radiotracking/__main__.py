@@ -12,7 +12,6 @@ import subprocess
 from ast import literal_eval
 from typing import List
 
-import pytz
 import schedule
 
 from radiotracking import StateMessage
@@ -190,7 +189,7 @@ class Runner:
             a.signal_queue.put(
                 StateMessage(
                     a.device,
-                    datetime.datetime.fromtimestamp(a.last_data_ts.value, tz=pytz.utc),
+                    datetime.datetime.fromtimestamp(a.last_data_ts.value),
                     StateMessage.State.STOPPED,
                 )
             )
@@ -228,7 +227,7 @@ class Runner:
                 analyzer.signal_queue.put(
                     StateMessage(
                         analyzer.device,
-                        datetime.datetime.fromtimestamp(analyzer.last_data_ts.value, tz=pytz.utc),
+                        datetime.datetime.fromtimestamp(analyzer.last_data_ts.value),
                         StateMessage.State.STOPPED,
                     )
                 )

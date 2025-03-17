@@ -362,7 +362,7 @@ class Dashboard(AbstractConsumer, threading.Thread):
         return {
             "data": traces,
             "layout": {
-                "xaxis": {"title": "Time", "range": (sigs[0].ts if sigs else None, datetime.datetime.utcnow())},
+                "xaxis": {"title": "Time", "range": (sigs[0].ts if sigs else None, datetime.datetime.now())},
                 "yaxis": {"title": "Signal Power (dBW)", "range": power},
                 "legend": {"title": "SDR Receiver"},
             },

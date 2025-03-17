@@ -8,7 +8,6 @@ from multiprocessing.sharedctypes import Synchronized
 from typing import List, Union
 
 import numpy as np
-import pytz
 import rtlsdr
 import scipy.signal
 
@@ -289,10 +288,10 @@ class SignalAnalyzer(multiprocessing.Process):
             # the state is different
             if self.last_state.state == state:
                 # the state's timeout isn't over
-                if self.last_state.ts + datetime.timedelta(seconds=self.state_update_s) >= ts.astimezone(pytz.UTC):
+                if self.last_state.ts + datetime.timedelta(seconds=self.state_update_s) >= ts.astimezone():
                     return
 
-        self.last_state = StateMessage(self.device, ts.astimezone(pytz.utc), state)
+        self.last_state = StateMessage(self.device, ts.astimezone(), state)
         self.signal_queue.put(self.last_state)
 
     def process_samples(self, buffer: np.ndarray, context):
@@ -559,7 +558,7 @@ class SignalAnalyzer(multiprocessing.Process):
                 snr_dB = dB(avg / freq_avg)
 
                 signal = Signal(
-                    self.device, ts.astimezone(pytz.utc), freq, duration, max_dBW, avg_dBW, std_dB, noise_dBW, snr_dB
+                    self.device, ts.astimezone(), freq, duration, max_dBW, avg_dBW, std_dB, noise_dBW, snr_dB
                 )
                 signals.append(signal)
 
