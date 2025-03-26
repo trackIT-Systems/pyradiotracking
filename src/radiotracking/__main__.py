@@ -189,7 +189,7 @@ class Runner:
             a.signal_queue.put(
                 StateMessage(
                     a.device,
-                    datetime.datetime.fromtimestamp(a.last_data_ts.value),
+                    datetime.datetime.fromtimestamp(a.last_data_ts.value).astimezone(),
                     StateMessage.State.STOPPED,
                 )
             )
@@ -227,7 +227,7 @@ class Runner:
                 analyzer.signal_queue.put(
                     StateMessage(
                         analyzer.device,
-                        datetime.datetime.fromtimestamp(analyzer.last_data_ts.value),
+                        datetime.datetime.fromtimestamp(analyzer.last_data_ts.value).astimezone(),
                         StateMessage.State.STOPPED,
                     )
                 )
