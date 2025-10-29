@@ -35,7 +35,7 @@ def on_matched_cbor(client: mqtt.Client, userdata, message):
     csv.writer(sys.stdout).writerow([station] + matched_list)
 
 
-def on_connect(mqttc: mqtt.Client, inlfuxc, flags, rc):
+def on_connect(mqttc: mqtt.Client, inlfuxc, flags, rc, properties):
     logging.info(f"MQTT connection established ({rc})")
 
     # subscribe to match signal cbor messages
@@ -51,7 +51,11 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging_level)
 
     # create client object and set callback methods
-    mqttc = mqtt.Client(client_id=f"{platform.node()}-mqtt-influx-bridge", clean_session=False)
+    mqttc = mqtt.Client(
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+        client_id=f"{platform.node()}-mqtt-influx-bridge",
+        clean_session=False,
+    )
     mqttc.on_connect = on_connect
 
     # configure tls connection (skip tls certificate validation for now)

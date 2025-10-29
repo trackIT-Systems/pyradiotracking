@@ -99,7 +99,11 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
 
         self.prefix = prefix
         self.mqtt_qos = mqtt_qos
-        self.client = paho.mqtt.client.Client(f"{platform.node()}-radiotracking", clean_session=False)
+        self.client = paho.mqtt.client.Client(
+            callback_api_version=paho.mqtt.client.CallbackAPIVersion.VERSION2,
+            client_id=f"{platform.node()}-radiotracking",
+            clean_session=False,
+        )
         self.client.connect(mqtt_host, mqtt_port, keepalive=mqtt_keepalive)
         self.client.loop_start()
 
