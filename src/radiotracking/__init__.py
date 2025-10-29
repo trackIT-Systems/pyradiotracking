@@ -7,6 +7,8 @@ from typing import Dict, List, Optional, Union
 
 import numpy as np
 
+__version__ = "0.3.2"
+
 logger = logging.getLogger(__name__)
 
 
