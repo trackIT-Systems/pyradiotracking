@@ -130,7 +130,7 @@ class Dashboard(AbstractConsumer, threading.Thread):
             ],
         )(self.update_signal_variance)
 
-        graph_tab = dcc.Tab(label="tRackIT Signals", children=[])
+        graph_tab = dcc.Tab(label="Radiotracking Signals", children=[])
         graph_tab.children.append(
             html.H4(
                 "Running in calibration mode.",
@@ -696,7 +696,7 @@ class ConfigDashboard(threading.Thread):
         )
 
         config_columns = html.Div(children=[], style={"columns": "2 359px", "padding": "20pt"})
-        config_tab = dcc.Tab(label="tRackIT Configuration", children=[config_columns])
+        config_tab = dcc.Tab(label="Radiotracking Configuration", children=[config_columns])
         config_columns.children.append(
             html.Div(
                 "Reconfiguration requires restarting of radiotracking. Please keep in mind, that a broken configuration might lead to failing starts."
