@@ -254,8 +254,13 @@ class SignalAnalyzer(multiprocessing.Process):
         signal.signal(signal.SIGALRM, self.handle_signal)
         signal.alarm(self.sdr_timeout_s)
 
-        # start sdr sampling
-        self.sdr.read_samples_async(self.process_samples, self.sdr_callback_length)
+        try:
+            # start sdr sampling
+            self.sdr.read_samples_async(self.process_samples, self.sdr_callback_length)
+        finally:
+            # Ensure SDR device is closed on exit
+            if self.sdr is not None:
+                self.sdr.close()
 
     def handle_signal(self, sig, frame):
         """

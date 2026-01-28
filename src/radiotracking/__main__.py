@@ -195,7 +195,7 @@ class Runner:
             )
             for a in self.analyzers
         ]
-        [a.kill() for a in self.analyzers]
+        [a.terminate() for a in self.analyzers]
         [a.join() for a in self.analyzers]
         self.analyzers = []
 
@@ -231,7 +231,7 @@ class Runner:
                         StateMessage.State.STOPPED,
                     )
                 )
-                analyzer.kill()
+                analyzer.terminate()
                 analyzer.join()
 
             else:
