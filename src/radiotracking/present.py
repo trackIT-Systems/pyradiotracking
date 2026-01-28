@@ -1,11 +1,12 @@
 import argparse
 import collections
 import datetime
+import hashlib
 import logging
 import os
 import threading
 from ast import literal_eval
-from typing import DefaultDict, Deque, Dict, Iterable, List, Tuple, Union
+from typing import DefaultDict, Deque, Dict, Iterable, List, Optional, Tuple, Union
 
 import dash
 import plotly.graph_objs as go
@@ -33,12 +34,11 @@ SDR_COLORS.update(
 
 
 def group(sigs: Iterable[Signal], by: str) -> List[Tuple[str, List[Signal]]]:
-    keys = sorted(set([sig.__dict__[by] for sig in sigs]))
-    groups = []
-    for key in keys:
-        groups.append((key, [sig for sig in sigs if sig.__dict__[by] == key]))
-
-    return groups
+    """Optimized grouping using defaultdict for O(n) instead of O(n*m)."""
+    grouped: DefaultDict[str, List[Signal]] = collections.defaultdict(list)
+    for sig in sigs:
+        grouped[sig.__dict__[by]].append(sig)
+    return sorted(grouped.items())
 
 
 class Dashboard(AbstractConsumer, threading.Thread):
@@ -79,14 +79,27 @@ class Dashboard(AbstractConsumer, threading.Thread):
 
         graph_columns = html.Div(children=[], style={"columns": "2 359px"})
         graph_columns.children.append(dcc.Graph(id="signal-noise", style={"break-inside": "avoid-column"}))
+        
+        # Shared callback to filter and store signals
+        # Use State for sliders to reduce callback frequency (only update on interval or explicit slider release)
+        self.app.callback(
+            [Output("filtered-signals-store", "data"), Output("filter-state-store", "data")],
+            [
+                Input("update", "n_intervals"),
+            ],
+            [
+                State("power-slider", "value"),
+                State("snr-slider", "value"),
+                State("frequency-slider", "value"),
+                State("duration-slider", "value"),
+            ],
+        )(self.update_filtered_signals_store)
+        
         self.app.callback(
             Output("signal-noise", "figure"),
             [
-                Input("update", "n_intervals"),
+                Input("filtered-signals-store", "data"),
                 Input("power-slider", "value"),
-                Input("snr-slider", "value"),
-                Input("frequency-slider", "value"),
-                Input("duration-slider", "value"),
             ],
         )(self.update_signal_noise)
 
@@ -94,11 +107,9 @@ class Dashboard(AbstractConsumer, threading.Thread):
         self.app.callback(
             Output("frequency-histogram", "figure"),
             [
-                Input("update", "n_intervals"),
+                Input("filtered-signals-store", "data"),
                 Input("power-slider", "value"),
-                Input("snr-slider", "value"),
                 Input("frequency-slider", "value"),
-                Input("duration-slider", "value"),
             ],
         )(self.update_frequency_histogram)
 
@@ -114,11 +125,8 @@ class Dashboard(AbstractConsumer, threading.Thread):
         self.app.callback(
             Output("signal-variance", "figure"),
             [
-                Input("update", "n_intervals"),
+                Input("filtered-signals-store", "data"),
                 Input("power-slider", "value"),
-                Input("snr-slider", "value"),
-                Input("frequency-slider", "value"),
-                Input("duration-slider", "value"),
             ],
         )(self.update_signal_variance)
 
@@ -145,6 +153,10 @@ class Dashboard(AbstractConsumer, threading.Thread):
 
         graph_tab.children.append(dcc.Interval(id="update", interval=1000))
         self.app.callback(Output("update", "interval"), [Input("interval-slider", "value")])(self.update_interval)
+        
+        # Shared data store for filtered signals to avoid redundant filtering
+        graph_tab.children.append(dcc.Store(id="filtered-signals-store", data=None))
+        graph_tab.children.append(dcc.Store(id="filter-state-store", data=None))
 
         graph_tab.children.append(
             html.Div(
@@ -156,11 +168,8 @@ class Dashboard(AbstractConsumer, threading.Thread):
         self.app.callback(
             Output("signal-time", "figure"),
             [
-                Input("update", "n_intervals"),
+                Input("filtered-signals-store", "data"),
                 Input("power-slider", "value"),
-                Input("snr-slider", "value"),
-                Input("frequency-slider", "value"),
-                Input("duration-slider", "value"),
             ],
         )(self.update_signal_time)
 
@@ -259,10 +268,27 @@ class Dashboard(AbstractConsumer, threading.Thread):
         logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
         self.calibrations: Dict[float, Dict[str, float]] = {}
+        
+        # Performance optimization: filter caching
+        self._filter_cache: Optional[Tuple[tuple, List[Signal]]] = None
+        self._last_filter_state: Optional[Tuple[float, float, float, float, float, float, float, float]] = None
+        self._cache_invalidation_counter = 0
+        
+        # Precomputed signal data cache (duration_ms)
+        # Limit cache size to 2x max signal queue to prevent unbounded growth
+        self._signal_data_cache: Dict[int, float] = {}
+        self._max_cache_size = dashboard_signals * 2
+        
+        # Calibration dict size limit
+        self._max_calibration_entries = 1000
 
     def add(self, signal: AbstractMessage):
         if isinstance(signal, Signal):
             self.signal_queue.append(signal)
+            
+            # Invalidate filter cache when new signal is added
+            self._cache_invalidation_counter += 1
+            self._filter_cache = None
 
             # create / update calibration dict calibrations[freq][device] = max(sig.avg)
             if signal.frequency not in self.calibrations:
@@ -275,6 +301,16 @@ class Dashboard(AbstractConsumer, threading.Thread):
                 self.calibrations[signal.frequency][signal.device] = max(
                     self.calibrations[signal.frequency][signal.device], signal.avg
                 )
+            
+            # Limit calibration dict size - remove oldest entries if over limit
+            if len(self.calibrations) > self._max_calibration_entries:
+                # Remove entries with lowest max values
+                sorted_items = sorted(
+                    self.calibrations.items(),
+                    key=lambda item: max(item[1].values()) if item[1] else float('-inf')
+                )
+                # Keep only the top entries
+                self.calibrations = dict(sorted_items[-self._max_calibration_entries:])
 
         elif isinstance(signal, MatchingSignal):
             self.matched_queue.append(signal)
@@ -326,9 +362,67 @@ class Dashboard(AbstractConsumer, threading.Thread):
 
     def update_interval(self, interval):
         return interval * 1000
+    
+    def update_filtered_signals_store(self, n_intervals, power, snr, freq, duration):
+        """Shared callback to filter signals and store in dcc.Store for other callbacks.
+        Uses State for sliders to reduce callback frequency (debouncing effect)."""
+        if power is None or snr is None or freq is None or duration is None:
+            return None, None
+        
+        filtered_sigs = self.select_sigs(power, snr, freq, duration)
+        
+        # Serialize signals for storage (store only essential data)
+        serialized = []
+        for sig in filtered_sigs:
+            serialized.append({
+                'device': sig.device,
+                'ts': sig.ts.isoformat() if isinstance(sig.ts, datetime.datetime) else str(sig.ts),
+                'frequency': sig.frequency,
+                'avg': sig.avg,
+                'snr': sig.snr,
+                'std': sig.std,
+                'duration_ms': self._get_duration_ms(sig),
+            })
+        
+        filter_state = {
+            'power': power,
+            'snr': snr,
+            'freq': freq,
+            'duration': duration,
+        }
+        
+        return serialized, filter_state
 
+    def _get_duration_ms(self, sig: Signal) -> float:
+        """Get duration in milliseconds, using cache if available."""
+        sig_id = id(sig)
+        if sig_id not in self._signal_data_cache:
+            # Clean up cache if it's too large (remove oldest entries)
+            if len(self._signal_data_cache) >= self._max_cache_size:
+                # Remove oldest 25% of entries (simple FIFO-like cleanup)
+                keys_to_remove = list(self._signal_data_cache.keys())[:self._max_cache_size // 4]
+                for key in keys_to_remove:
+                    del self._signal_data_cache[key]
+            self._signal_data_cache[sig_id] = sig.duration.total_seconds() * 1000
+        return self._signal_data_cache[sig_id]
+    
     def select_sigs(self, power: List[float], snr: List[float], freq: List[float], duration: List[float]):
-        return [
+        """Select signals matching filters, using cache when filters haven't changed."""
+        # Create filter state tuple for comparison
+        filter_state = (
+            power[0], power[1],
+            snr[0], snr[1],
+            freq[0], freq[1],
+            duration[0], duration[1]
+        )
+        
+        # Check if we can use cached results
+        if (self._filter_cache is not None and 
+            self._last_filter_state == filter_state):
+            return self._filter_cache[1]
+        
+        # Filter signals
+        filtered = [
             sig
             for sig in self.signal_queue
             if sig.avg > power[0]
@@ -337,120 +431,214 @@ class Dashboard(AbstractConsumer, threading.Thread):
             and sig.snr < snr[1]
             and sig.frequency > freq[0]
             and sig.frequency < freq[1]
-            and sig.duration.total_seconds() * 1000 > duration[0]
-            and sig.duration.total_seconds() * 1000 < duration[1]
+            and self._get_duration_ms(sig) > duration[0]
+            and self._get_duration_ms(sig) < duration[1]
         ]
+        
+        # Cache the results
+        self._filter_cache = (filter_state, filtered)
+        self._last_filter_state = filter_state
+        
+        return filtered
 
-    def update_signal_time(self, n, power, snr, freq, duration):
+    def _deserialize_signals(self, serialized_data):
+        """Convert serialized signal data back to Signal-like objects for processing."""
+        if not serialized_data:
+            return []
+        
+        class SignalProxy:
+            def __init__(self, data):
+                self.device = data['device']
+                self.ts = datetime.datetime.fromisoformat(data['ts']) if isinstance(data['ts'], str) else data['ts']
+                self.frequency = data['frequency']
+                self.avg = data['avg']
+                self.snr = data['snr']
+                self.std = data['std']
+                self.duration_ms = data['duration_ms']
+        
+        return [SignalProxy(d) for d in serialized_data]
+    
+    def update_signal_time(self, serialized_data, power):
         traces = []
-        sigs = self.select_sigs(power, snr, freq, duration)
+        if not serialized_data:
+            fig = go.Figure(data=traces)
+            fig.update_layout(
+                uirevision="signal-time",  # Preserve zoom/pan state for x-axis
+                xaxis={"title": "Time"},
+                yaxis={
+                    "title": "Signal Power (dBW)", 
+                    "range": power if power else None,
+                    "fixedrange": True,  # Lock y-axis to slider range, prevent zooming
+                },
+                legend={"title": "SDR Receiver"},
+            )
+            return fig
+        
+        sigs = self._deserialize_signals(serialized_data)
+        
+        # Group by device using optimized defaultdict
+        grouped: DefaultDict[str, List] = collections.defaultdict(list)
+        for sig in sigs:
+            grouped[sig.device].append(sig)
 
-        for trace_sdr, sdr_sigs in group(sigs, "device"):
+        for trace_sdr, sdr_sigs in sorted(grouped.items()):
             trace = go.Scatter(
                 x=[sig.ts for sig in sdr_sigs],
                 y=[sig.avg for sig in sdr_sigs],
                 name=trace_sdr,
                 mode="markers",
                 marker=dict(
-                    size=[sig.duration.total_seconds() * 1000 for sig in sdr_sigs],
+                    size=[sig.duration_ms for sig in sdr_sigs],
                     opacity=0.5,
                     color=SDR_COLORS[trace_sdr],
                 ),
             )
             traces.append(trace)
 
-        return {
-            "data": traces,
-            "layout": {
-                "xaxis": {"title": "Time", "range": (sigs[0].ts if sigs else None, datetime.datetime.now())},
-                "yaxis": {"title": "Signal Power (dBW)", "range": power},
-                "legend": {"title": "SDR Receiver"},
+        fig = go.Figure(data=traces)
+        fig.update_layout(
+            uirevision="signal-time",  # Preserve zoom/pan state for x-axis
+            xaxis={"title": "Time", "range": (sigs[0].ts if sigs else None, datetime.datetime.now())},
+            yaxis={
+                "title": "Signal Power (dBW)", 
+                "range": power,
+                "fixedrange": True,  # Lock y-axis to slider range, prevent zooming
             },
-        }
+            legend={"title": "SDR Receiver"},
+        )
+        return fig
 
-    def update_signal_noise(self, n, power, snr, freq, duration):
+    def update_signal_noise(self, serialized_data, power):
         traces = []
-        sigs = self.select_sigs(power, snr, freq, duration)
+        if not serialized_data:
+            fig = go.Figure(data=traces)
+            fig.update_layout(
+                uirevision="signal-noise",  # Preserve zoom/pan state
+                title="Signal to Noise",
+                xaxis={"title": "SNR (dB)"},
+                yaxis={"title": "Signal Power (dBW)", "range": power if power else None},
+                legend={"title": "SDR Receiver"},
+            )
+            return fig
+        
+        sigs = self._deserialize_signals(serialized_data)
+        
+        # Group by device using optimized defaultdict
+        grouped: DefaultDict[str, List] = collections.defaultdict(list)
+        for sig in sigs:
+            grouped[sig.device].append(sig)
 
-        for trace_sdr, sdr_sigs in group(sigs, "device"):
+        for trace_sdr, sdr_sigs in sorted(grouped.items()):
             trace = go.Scatter(
                 x=[sig.snr for sig in sdr_sigs],
                 y=[sig.avg for sig in sdr_sigs],
                 name=trace_sdr,
                 mode="markers",
                 marker=dict(
-                    size=[sig.duration.total_seconds() * 1000 for sig in sdr_sigs],
+                    size=[sig.duration_ms for sig in sdr_sigs],
                     opacity=0.3,
                     color=SDR_COLORS[trace_sdr],
                 ),
             )
             traces.append(trace)
 
-        return {
-            "data": traces,
-            "layout": {
-                "title": "Signal to Noise",
-                "xaxis": {"title": "SNR (dB)"},
-                "yaxis": {"title": "Signal Power (dBW)", "range": power},
-                "legend": {"title": "SDR Receiver"},
-            },
-        }
+        fig = go.Figure(data=traces)
+        fig.update_layout(
+            uirevision="signal-noise",  # Preserve zoom/pan state
+            title="Signal to Noise",
+            xaxis={"title": "SNR (dB)"},
+            yaxis={"title": "Signal Power (dBW)", "range": power},
+            legend={"title": "SDR Receiver"},
+        )
+        return fig
 
-    def update_signal_variance(self, n, power, snr, freq, duration):
+    def update_signal_variance(self, serialized_data, power):
         traces = []
-        sigs = self.select_sigs(power, snr, freq, duration)
+        if not serialized_data:
+            fig = go.Figure(data=traces)
+            fig.update_layout(
+                uirevision="signal-variance",  # Preserve zoom/pan state
+                title="Signal Variance",
+                xaxis={"title": "Standard Deviation (dB)"},
+                yaxis={"title": "Signal Power (dBW)", "range": power if power else None},
+                legend={"title": "SDR Receiver"},
+            )
+            return fig
+        
+        sigs = self._deserialize_signals(serialized_data)
+        
+        # Group by device using optimized defaultdict
+        grouped: DefaultDict[str, List] = collections.defaultdict(list)
+        for sig in sigs:
+            grouped[sig.device].append(sig)
 
-        for trace_sdr, sdr_sigs in group(sigs, "device"):
+        for trace_sdr, sdr_sigs in sorted(grouped.items()):
             trace = go.Scatter(
                 x=[sig.std for sig in sdr_sigs],
                 y=[sig.avg for sig in sdr_sigs],
                 name=trace_sdr,
                 mode="markers",
                 marker=dict(
-                    size=[sig.duration.total_seconds() * 1000 for sig in sdr_sigs],
+                    size=[sig.duration_ms for sig in sdr_sigs],
                     opacity=0.3,
                     color=SDR_COLORS[trace_sdr],
                 ),
             )
             traces.append(trace)
 
-        return {
-            "data": traces,
-            "layout": {
-                "title": "Signal Variance",
-                "xaxis": {"title": "Standard Deviation (dB)"},
-                "yaxis": {"title": "Signal Power (dBW)", "range": power},
-                "legend": {"title": "SDR Receiver"},
-            },
-        }
+        fig = go.Figure(data=traces)
+        fig.update_layout(
+            uirevision="signal-variance",  # Preserve zoom/pan state
+            title="Signal Variance",
+            xaxis={"title": "Standard Deviation (dB)"},
+            yaxis={"title": "Signal Power (dBW)", "range": power},
+            legend={"title": "SDR Receiver"},
+        )
+        return fig
 
-    def update_frequency_histogram(self, n, power, snr, freq, duration):
+    def update_frequency_histogram(self, serialized_data, power, freq):
         traces = []
-        sigs = self.select_sigs(power, snr, freq, duration)
+        if not serialized_data:
+            fig = go.Figure(data=traces)
+            fig.update_layout(
+                uirevision="frequency-histogram",  # Preserve zoom/pan state
+                title="Frequency Usage",
+                xaxis={"title": "Frequency (MHz)", "range": freq if freq else None},
+                yaxis={"title": "Signal Power (dBW)", "range": power if power else None},
+                legend_title_text="SDR Receiver",
+            )
+            return fig
+        
+        sigs = self._deserialize_signals(serialized_data)
+        
+        # Group by device using optimized defaultdict
+        grouped: DefaultDict[str, List] = collections.defaultdict(list)
+        for sig in sigs:
+            grouped[sig.device].append(sig)
 
-        for trace_sdr, sdr_sigs in group(sigs, "device"):
+        for trace_sdr, sdr_sigs in sorted(grouped.items()):
             trace = go.Scatter(
                 x=[sig.frequency for sig in sdr_sigs],
                 y=[sig.avg for sig in sdr_sigs],
                 name=trace_sdr,
                 mode="markers",
                 marker=dict(
-                    size=[sig.duration.total_seconds() * 1000 for sig in sdr_sigs],
+                    size=[sig.duration_ms for sig in sdr_sigs],
                     opacity=0.3,
                     color=SDR_COLORS[trace_sdr],
                 ),
             )
             traces.append(trace)
 
-        return {
-            "data": traces,
-            "layout": {
-                "title": "Frequency Usage",
-                "xaxis": {"title": "Frequency (MHz)", "range": freq},
-                "yaxis": {"title": "Signal Power (dBW)", "range": power},
-                "legend_title_text": "SDR Receiver",
-            },
-        }
+        fig = go.Figure(data=traces)
+        fig.update_layout(
+            uirevision="frequency-histogram",  # Preserve zoom/pan state
+            title="Frequency Usage",
+            xaxis={"title": "Frequency (MHz)", "range": freq},
+            yaxis={"title": "Signal Power (dBW)", "range": power},
+            legend_title_text="SDR Receiver",
+        )
+        return fig
 
     def update_signal_match(self, n):
         traces = []
@@ -469,20 +657,20 @@ class Dashboard(AbstractConsumer, threading.Thread):
         )
         traces.append(trace)
 
-        return {
-            "data": traces,
-            "layout": {
-                "title": "Matched Frequencies",
-                "xaxis": {
-                    "title": "Horizontal Difference",
-                    "range": [-50, 50],
-                },
-                "yaxis": {
-                    "title": "Vertical Difference",
-                    "range": [-50, 50],
-                },
+        fig = go.Figure(data=traces)
+        fig.update_layout(
+            uirevision="signal-match",  # Preserve zoom/pan state
+            title="Matched Frequencies",
+            xaxis={
+                "title": "Horizontal Difference",
+                "range": [-50, 50],
             },
-        }
+            yaxis={
+                "title": "Vertical Difference",
+                "range": [-50, 50],
+            },
+        )
+        return fig
 
     def run(self):
         self.server.serve_forever()
