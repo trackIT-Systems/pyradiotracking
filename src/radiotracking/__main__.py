@@ -68,6 +68,11 @@ class Runner:
         "--sdr-timeout-s", help="Time after which an SDR device is considered unrepsonsive (s)", default=2, type=int
     )
     sdr_options.add_argument(
+        "--sdr-dynamic-scheduling",
+        action="store_true",
+        help="allow the OS to schedule SDR processes freely (default: pin each SDR to a CPU, device index modulo ncpu)",
+    )
+    sdr_options.add_argument(
         "--state-update-s", help="interval in which state update messages should be recorded (s)", default=300, type=int
     )
 
@@ -160,13 +165,14 @@ class Runner:
         analyzer = SignalAnalyzer(signal_queue=self.connector.q, last_data_ts=last_data_ts, **vars(dargs))
         analyzer.start()
 
-        try:
-            cpu_core = analyzer.device_index % multiprocessing.cpu_count()
-            out = subprocess.check_output(["taskset", "-p", "-c", str(cpu_core), str(analyzer.pid)])
-            for line in out.decode().splitlines():
-                logger.info(f"SDR {analyzer.device} CPU affinity: {line}")
-        except FileNotFoundError:
-            logger.warning(f"SDR {analyzer.device} CPU affinity: failed to configure")
+        if not self.args.sdr_dynamic_scheduling:
+            try:
+                cpu_core = analyzer.device_index % multiprocessing.cpu_count()
+                out = subprocess.check_output(["taskset", "-p", "-c", str(cpu_core), str(analyzer.pid)])
+                for line in out.decode().splitlines():
+                    logger.info(f"SDR {analyzer.device} CPU affinity: {line}")
+            except FileNotFoundError:
+                logger.warning(f"SDR {analyzer.device} CPU affinity: failed to configure")
 
         return analyzer
 
