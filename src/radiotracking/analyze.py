@@ -333,9 +333,9 @@ class SignalAnalyzer(multiprocessing.Process):
         clock_drift = (ts_recv - self._ts).total_seconds()
 
         # warn on clock drift and resync
-        if clock_drift > 2 * buffer_len_dt.total_seconds():
+        if clock_drift > self.sdr_timeout_s:
             logger.warning(
-                f"SDR {self.device} total clock drift ({clock_drift:.5f} s) is larger than two blocks, signal detection is degraded. Terminating..."
+                f"SDR {self.device} total clock drift ({clock_drift:.5f} s) is larger than sdr_timeout_s, signal detection is degraded. Terminating..."
             )
             self.update_state(datetime.datetime.now(), StateMessage.State.STOPPED)
             self.sdr.cancel_read_async()
