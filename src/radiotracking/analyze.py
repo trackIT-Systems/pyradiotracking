@@ -193,6 +193,9 @@ class SignalAnalyzer(multiprocessing.Process):
         signal.signal(signal.SIGTERM, self.handle_signal)
         signal.signal(signal.SIGINT, self.handle_signal)
 
+        # initialize state
+        self.last_state = None
+
         # logging levels increase in steps of 10, start with warning
         logging_level = max(0, logging.WARN - (self.verbose * 10))
         logging.basicConfig(level=logging_level)
@@ -247,9 +250,6 @@ class SignalAnalyzer(multiprocessing.Process):
             logger.warning("rtlsdr_set_tuner_gain_ext failed, set gain to %s", sdr.gain)
 
         self.sdr = sdr
-
-        # initialize state
-        self.last_state = None
 
         signal.signal(signal.SIGALRM, self.handle_signal)
         signal.alarm(self.sdr_timeout_s)
