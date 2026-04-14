@@ -5,6 +5,7 @@ import datetime
 import logging
 import multiprocessing
 import os
+import queue
 import platform
 import signal
 import socket
@@ -186,23 +187,70 @@ class Runner:
         for device, calibration_db in zip(self.args.device, self.args.calibration):
             self.analyzers.append(self.create_and_start(device, calibration_db))
 
+    def _put_analyzer_stopped_state(self, analyzer: SignalAnalyzer) -> None:
+        # Never block here: shutdown may run from a signal handler on the main thread, and
+        # multiprocessing.Queue is not re-entrant — a blocking put can deadlock if SIGINT
+        # arrives and tries to shut down again while still inside put().
+        try:
+            analyzer.signal_queue.put(
+                StateMessage(
+                    analyzer.device,
+                    datetime.datetime.fromtimestamp(analyzer.last_data_ts.value).astimezone(),
+                    StateMessage.State.STOPPED,
+                ),
+                block=False,
+            )
+        except queue.Full:
+            logger.warning(
+                "SDR %s: signal queue is full; could not enqueue STOPPED state before shutdown.",
+                analyzer.device,
+            )
+        except (BrokenPipeError, OSError) as err:
+            logger.warning(
+                "SDR %s: could not enqueue STOPPED state (%s).",
+                analyzer.device,
+                err,
+            )
+
+    def _join_analyzer_or_kill(self, analyzer: SignalAnalyzer, join_timeout_s: float = 10.0) -> None:
+        # Avoid is_alive() in the shutdown path: on some Linux setups it can block on the
+        # child's internal sync when another thread sent SIGKILL. Prefer join(timeout=0)
+        # to reap, then exitcode / timed joins.
+        try:
+            analyzer.join(timeout=0)
+        except ValueError:
+            pass
+        if analyzer.exitcode is not None:
+            return
+        analyzer.join(timeout=join_timeout_s)
+        if analyzer.exitcode is not None:
+            return
+        logger.warning(
+            "SDR %s did not exit within %.1fs after SIGTERM; sending SIGKILL.",
+            analyzer.device,
+            join_timeout_s,
+        )
+        analyzer.kill()
+        analyzer.join(timeout=5.0)
+        if analyzer.exitcode is None:
+            logger.critical(
+                "SDR %s still alive after SIGKILL (pid=%s).",
+                analyzer.device,
+                analyzer.pid,
+            )
+
     def stop_analyzers(self):
         """
         Stop all analyzer threads.
         """
         logger.info("Stopping all analyzers")
-        [
-            a.signal_queue.put(
-                StateMessage(
-                    a.device,
-                    datetime.datetime.fromtimestamp(a.last_data_ts.value).astimezone(),
-                    StateMessage.State.STOPPED,
-                )
-            )
-            for a in self.analyzers
-        ]
-        [a.terminate() for a in self.analyzers]
-        [a.join() for a in self.analyzers]
+        analyzers = list(self.analyzers)
+        for a in analyzers:
+            self._put_analyzer_stopped_state(a)
+        for a in analyzers:
+            a.terminate()
+        for a in analyzers:
+            self._join_analyzer_or_kill(a)
         self.analyzers = []
 
     def check_analyzers(self):
@@ -230,15 +278,9 @@ class Runner:
                 logger.warning(
                     f"SDR {analyzer.device} received last data {datetime.datetime.fromtimestamp(analyzer.last_data_ts.value)}; timed out."
                 )
-                analyzer.signal_queue.put(
-                    StateMessage(
-                        analyzer.device,
-                        datetime.datetime.fromtimestamp(analyzer.last_data_ts.value).astimezone(),
-                        StateMessage.State.STOPPED,
-                    )
-                )
+                self._put_analyzer_stopped_state(analyzer)
                 analyzer.terminate()
-                analyzer.join()
+                self._join_analyzer_or_kill(analyzer)
 
             else:
                 logger.info(f"SDR {analyzer.device} process is dead.")
@@ -259,20 +301,35 @@ class Runner:
         """
         Terminate the application.
         """
-        logger.warning(f"Caught {signal.Signals(sig).name}, terminating {len(self.analyzers)} analyzers.")
-        self.running = False
+        if getattr(self, "_terminate_in_progress", False):
+            logger.warning(
+                "Shutdown already in progress; ignoring nested %s.",
+                signal.Signals(sig).name,
+            )
+            return
+        self._terminate_in_progress = True
+        try:
+            self.running = False
+            # Stop MQTT (and detach the log handler) before emitting shutdown logs so a
+            # stuck broker cannot block this path or recurse from logging back into MQTT.
+            self.connector.shutdown()
 
-        # Stop the analyzers, and wait for completion
-        self.stop_analyzers()
+            logger.warning(f"Caught {signal.Signals(sig).name}, terminating {len(self.analyzers)} analyzers.")
 
-        if self.dashboard:
-            self.dashboard.stop()
+            # Stop the analyzers, and wait for completion
+            self.stop_analyzers()
 
-        logger.warning("Termination complete.")
+            if self.dashboard and self.dashboard.is_alive():
+                self.dashboard.stop()
+
+            logger.warning("Termination complete.")
+        finally:
+            self._terminate_in_progress = False
         # os.kill(os.getpid(), signal.SIGKILL)
 
     def __init__(self):
         self.running = True
+        self._terminate_in_progress = False
         self.analyzers: List[SignalAnalyzer] = []
         self.args = Runner.parser.parse_args()
 
@@ -388,6 +445,7 @@ class Runner:
             self.connector.step(next_check - datetime.datetime.now())
 
         logger.info("Exit main loop")
+        self.connector.shutdown()
         exit(0)
 
 

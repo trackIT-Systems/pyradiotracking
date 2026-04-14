@@ -99,6 +99,10 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
 
         self.prefix = prefix
         self.mqtt_qos = mqtt_qos
+        self._shutdown = False
+        # Bound time spent in the broker on each publish so a hung broker cannot
+        # block the main process (signal handling, SDR watchdog joins, clean exit).
+        self._publish_timeout_s = 2.0
         self.client = paho.mqtt.client.Client(
             callback_api_version=paho.mqtt.client.CallbackAPIVersion.VERSION2,
             client_id=f"{platform.node()}-radiotracking",
@@ -108,11 +112,40 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
         self.client.loop_start()
 
     def __del__(self):
-        logger.info("Stopping MQTT thread")
-        self.client.loop_stop()
+        try:
+            self.shutdown()
+        except Exception:
+            pass
+
+    def shutdown(self) -> None:
+        """Stop the MQTT client. Safe to call multiple times."""
+        if self._shutdown:
+            return
+        self._shutdown = True
+        try:
+            self.client.loop_stop()
+        except Exception:
+            pass
+        try:
+            self.client.disconnect()
+        except Exception:
+            pass
+
+    def _publish(self, topic: str, payload, qos: int | None = None) -> None:
+        if self._shutdown:
+            return
+        qos = self.mqtt_qos if qos is None else qos
+        try:
+            info = self.client.publish(topic, payload, qos=qos)
+            info.wait_for_publish(timeout=self._publish_timeout_s)
+        except Exception:
+            return
 
     def emit(self, record):
         """Override the emit method to forward log messages to the MQTT broker."""
+        if self._shutdown:
+            return
+
         path = f"{self.prefix}/log"
 
         # skip dash messages
@@ -125,10 +158,12 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
             [record.levelname, record.name, self.format(record)]
         )
         payload_csv = csv_io.getvalue().splitlines()[0]
-        self.client.publish(path + "/csv", payload_csv, qos=self.mqtt_qos)
+        self._publish(path + "/csv", payload_csv)
 
     def add(self, signal: AbstractMessage):
         """Add a signal to the consumer."""
+        if self._shutdown:
+            return
 
         if isinstance(signal, Signal):
             path = f"{self.prefix}/device/{signal.device}"
@@ -145,20 +180,20 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
             signal.as_dict,
             default=jsonify,
         )
-        self.client.publish(path + "/json", payload_json, qos=self.mqtt_qos)
+        self._publish(path + "/json", payload_json)
 
         # publish csv
         csv_io = StringIO()
         csv.writer(csv_io, dialect="excel", delimiter=";").writerow([csvify(v) for v in signal.as_list])
         payload_csv = csv_io.getvalue().splitlines()[0]
-        self.client.publish(path + "/csv", payload_csv, qos=self.mqtt_qos)
+        self._publish(path + "/csv", payload_csv)
 
         # publish cbor
         payload_cbor = cbor.dumps(
             signal.as_list,
             default=cborify,
         )
-        self.client.publish(path + "/cbor", payload_cbor, qos=self.mqtt_qos)
+        self._publish(path + "/cbor", payload_cbor)
 
         logger.debug(
             f"published via mqtt, json: {len(payload_json)}, csv: {len(payload_csv)}, cbor: {len(payload_cbor)}"
@@ -287,6 +322,20 @@ class ProcessConnector:
             mqtt_consumer = MQTTConsumer(prefix=f"{station}/radiotracking", **kwargs)
             self.consumers.append(mqtt_consumer)
             logging.getLogger("radiotracking").addHandler(mqtt_consumer)
+
+        self._connector_shutdown = False
+
+    def shutdown(self) -> None:
+        """Detach logging handlers and stop MQTT so shutdown cannot block on the broker."""
+        if getattr(self, "_connector_shutdown", False):
+            return
+        self._connector_shutdown = True
+        rt_log = logging.getLogger("radiotracking")
+        for c in self.consumers:
+            if isinstance(c, MQTTConsumer):
+                if c in rt_log.handlers:
+                    rt_log.removeHandler(c)
+                c.shutdown()
 
     def step(self, timeout: datetime.timedelta):
         """
