@@ -1,9 +1,9 @@
 [project]
 name = "radiotracking"
-version = "0.3.2"
+version = "0.3.3"
 description = "Detect signals of VHF wildlife tags using rtl-sdr"
 authors = [
-    {name = "Jonas Höchst", email = "git@jonashoechst.de"},
+    {name = "Jonas Höchst", email = "hoechst@trackit.systems"},
 ]
 dependencies = [
     "pyrtlsdr>=0.3.0",
