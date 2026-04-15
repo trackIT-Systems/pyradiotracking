@@ -66,7 +66,10 @@ class Runner:
     
     sdr_options.add_argument("--sdr-max-restart", help="maximal restart count per SDR device", default=3, type=int)
     sdr_options.add_argument(
-        "--sdr-timeout-s", help="Time after which an SDR device is considered unrepsonsive (s)", default=2, type=int
+        "--sdr-timeout-s",
+        help="Stall timeout (s) for SIGALRM/parent watchdog; also caps IQ ring size at sample_rate*timeout samples",
+        default=2,
+        type=int,
     )
     sdr_options.add_argument(
         "--sdr-dynamic-scheduling",
@@ -94,6 +97,12 @@ class Runner:
     )
     analysis_options.add_argument(
         "-u", "--signal-max-duration-ms", help="upper limit for signal duration (ms)", type=float, default=40
+    )
+    analysis_options.add_argument(
+        "--analysis-block-samples",
+        help="IQ samples per spectrogram/detection chunk (default: ~0.1 s at sample_rate, aligned to fft_nperseg)",
+        default=None,
+        type=int,
     )
 
     # analysis options

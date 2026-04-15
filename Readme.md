@@ -105,17 +105,13 @@ For larger buffers, as preferable for high sampling rates in terms of effificien
 
 `echo 0 | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb`
 
-#### Clock Drift, Resyncing
+#### Sample buffer, timestamps, and stalls
 
-Each analyzer holds a time stamp internally to derive the time of a detected signal from. The clock is initialized on first async callback from the RTL-SDR library and then incremented according to the data retrieved from the SDR in the following callbacks. Whenever the calculated timestamp differs from the system clock by more than one block length this is detected:
+USB/async callbacks only copy IQ into an internal ring buffer (capacity `sample_rate * sdr_timeout_s` samples). A separate thread runs the spectrogram and detection on fixed **analysis** chunks (`analysis_block_samples`, default about **0.1 s** of IQ at `sample_rate`, rounded up to a multiple of `fft_nperseg`). This decouples `sdr_callback_length` (USB transfer size) from FFT block size.
 
-`SDR 0 total clock drift (1.1482 s) is larger than two blocks, signal detection is degraded. Resyncing...`
+Signal timestamps follow a **sample-count timeline** (wall time anchors the first consumed chunk; later chunk starts advance by `samples / sample_rate`). Stall detection still uses wall time: `SIGALRM` / `sdr_timeout_s` and the parent watchdog if no USB callbacks arrive.
 
-Resyncing resets the internal clock to the current system clock, such that even though samples have been lost, the detected signals are using the correct timestamp.
-
-> Whenever resyncing is happening, there is a high likelihood, that signals detected in the previous blocks are also undergoing delay. 
-
-Resyncing can be prevented by using less ressource hungry settings, such as: higher signal / SNR thresholds, lower gain, lower sampling rate, larger callback length. 
+If the ring fills (analysis cannot keep up), the analyzer stops and the normal per-device restart logic applies. Avoid overload with less expensive analysis settings, or increase `sdr_timeout_s` only if you accept a larger ring backlog.
 
 
 ### Caveats
