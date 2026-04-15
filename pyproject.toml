@@ -1,6 +1,6 @@
 [project]
 name = "radiotracking"
-version = "0.3.3"
+version = "0.4.0"
 description = "Detect signals of VHF wildlife tags using rtl-sdr"
 authors = [
     {name = "Jonas Höchst", email = "hoechst@trackit.systems"},
