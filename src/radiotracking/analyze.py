@@ -46,6 +46,9 @@ class SignalAnalyzer(multiprocessing.Process):
         The center frequency of the SDR.
     gain: float
         The gain of the SDR.
+    tuner_bandwidth: int
+        The R820T2 IF filter bandwidth in Hz. 0 = default (2 * sample_rate is used).
+        Must be set together with an appropriate sample_rate to actually capture a wider band.
     fft_nperseg: int
         The number of samples per segment for the FFT.
     fft_window:
@@ -84,6 +87,7 @@ class SignalAnalyzer(multiprocessing.Process):
         lna_gain: int,
         mixer_gain: int,
         vga_gain: int,
+        tuner_bandwidth: int,
         fft_nperseg: int,
         fft_window,
         signal_min_duration_ms: float,
@@ -131,6 +135,7 @@ class SignalAnalyzer(multiprocessing.Process):
         if sdr_callback_length is None:
             sdr_callback_length = sample_rate
 
+        self.tuner_bandwidth = tuner_bandwidth
         self.fft_nperseg = fft_nperseg
         self.fft_window = fft_window
         self.signal_min_duration = signal_min_duration_ms / 1000
@@ -376,6 +381,10 @@ class SignalAnalyzer(multiprocessing.Process):
             logger.info("adjusting sample rate according to hardware properties: %s", sdr.sample_rate)
             self.sample_rate = sdr.sample_rate
         sdr.center_freq = self.center_freq
+
+        effective_bandwidth = self.tuner_bandwidth if self.tuner_bandwidth != 0 else 2 * self.sample_rate
+        sdr.bandwidth = effective_bandwidth
+        logger.info("SDR %s: tuner bandwidth set to %s Hz (applied: %s Hz)", self.device, effective_bandwidth, sdr.bandwidth)
 
         try:
             if self.lna_gain not in range(0, 16):

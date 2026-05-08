@@ -63,6 +63,12 @@ class Runner:
     sdr_options.add_argument("--lna-gain", help="lna_gain index in 0 .. 15", default="15", type=int)
     sdr_options.add_argument("--mixer-gain", help="mixer_gain index in 0 .. 15", default="14", type=int)
     sdr_options.add_argument("--vga-gain", help="vga_gain index in 0 .. 15", default="15", type=int)
+    sdr_options.add_argument(
+        "--tuner-bandwidth",
+        help="R820T2 IF filter bandwidth (Hz); 0 = default (2 * sample-rate)",
+        default=0,
+        type=int,
+    )
     
     sdr_options.add_argument("--sdr-max-restart", help="maximal restart count per SDR device", default=3, type=int)
     sdr_options.add_argument(
