@@ -71,7 +71,10 @@ class StateMessage(AbstractMessage):
         self,
         device: str,
         ts: datetime.datetime,
-        state: Union[State, int, str],
+        state: Union["StateMessage.State", int, str],
+        peak_db: Optional[float] = None,
+        rms_db: Optional[float] = None,
+        snr_db: Optional[float] = None,
     ):
         super().__init__()
 
@@ -83,7 +86,11 @@ class StateMessage(AbstractMessage):
         else:
             self.state = StateMessage.State(int(state))
 
-    header: List[str] = ["Device", "Time", "State"]
+        self.peak_db: Optional[float] = peak_db
+        self.rms_db: Optional[float] = rms_db
+        self.snr_db: Optional[float] = snr_db
+
+    header: List[str] = ["Device", "Time", "State", "Peak (dBW)", "RMS (dBW)", "SNR (dB)"]
 
     @property
     def as_list(self) -> List:
@@ -91,10 +98,16 @@ class StateMessage(AbstractMessage):
             self.device,
             self.ts,
             self.state.value,
+            self.peak_db,
+            self.rms_db,
+            self.snr_db,
         ]
 
     def __repr__(self) -> str:
-        return f"StateMessage({self.device}, {self.ts}, {self.state})"
+        return (
+            f"StateMessage({self.device}, {self.ts}, {self.state}, "
+            f"peak_db={self.peak_db!r}, rms_db={self.rms_db!r}, snr_db={self.snr_db!r})"
+        )
 
 
 class AbstractSignal(AbstractMessage):

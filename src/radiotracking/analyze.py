@@ -75,6 +75,8 @@ class SignalAnalyzer(multiprocessing.Process):
         The multiprocessing queue to put the signals in.
     last_data_ts: multiprocessing.Value
         The multiprocessing value to put the last data timestamp in.
+    status_interval: float
+        Wall-clock interval (s) between aggregated spectrogram metrics in state messages; <= 0 disables.
     """
 
     def __init__(
@@ -102,6 +104,7 @@ class SignalAnalyzer(multiprocessing.Process):
         analysis_block_samples: int | None,
         signal_queue: multiprocessing.Queue,
         last_data_ts: Synchronized,
+        status_interval: float = 60.0,
         **kwargs,
     ):
         super().__init__()
@@ -150,6 +153,7 @@ class SignalAnalyzer(multiprocessing.Process):
         self.sdr_max_restart = sdr_max_restart
         self.sdr_timeout_s = sdr_timeout_s
         self.state_update_s = state_update_s
+        self.status_interval = status_interval
 
         self.signal_queue = signal_queue
         self.last_data_ts = last_data_ts
@@ -168,6 +172,10 @@ class SignalAnalyzer(multiprocessing.Process):
         self._consumer_thread: Optional[threading.Thread] = None
         self._sample_clock_t0: datetime.datetime | None = None
         self._samples_consumed: int = 0
+
+        self._status_peaks: list[float] = []
+        self._status_rms: list[float] = []
+        self._last_status_ts: datetime.datetime | None = None
 
     def _align_block_to_fft(self, n: int) -> int:
         n = max(self.fft_nperseg, n)
@@ -333,6 +341,28 @@ class SignalAnalyzer(multiprocessing.Process):
             signals = self.extract_signals(freqs, times, spectrogram, ts_start)
             bench_extract = time.time()
 
+            if self.status_interval > 0:
+                now_status = datetime.datetime.now().astimezone()
+                self._status_peaks.append(float(np.max(spectrogram)))
+                self._status_rms.append(float(np.mean(spectrogram)))
+                if self._last_status_ts is None:
+                    self._last_status_ts = now_status
+                elif (now_status - self._last_status_ts).total_seconds() >= self.status_interval:
+                    peak_db = dB(max(self._status_peaks)) - self.calibration_db
+                    rms_db = dB(float(np.mean(self._status_rms))) - self.calibration_db
+                    snr_db = peak_db - rms_db
+                    lifecycle = self.last_state.state if self.last_state else StateMessage.State.RUNNING
+                    self.update_state(
+                        now_status,
+                        lifecycle,
+                        peak_db=peak_db,
+                        rms_db=rms_db,
+                        snr_db=snr_db,
+                    )
+                    self._status_peaks.clear()
+                    self._status_rms.clear()
+                    self._last_status_ts = now_status
+
             filtered = self.filter_shadow_signals(signals)
             bench_filter = time.time()
 
@@ -459,6 +489,9 @@ class SignalAnalyzer(multiprocessing.Process):
         self._consumer_stop = threading.Event()
         self._sample_clock_t0 = None
         self._samples_consumed = 0
+        self._status_peaks = []
+        self._status_rms = []
+        self._last_status_ts = None
 
         self._consumer_thread = threading.Thread(target=self._analysis_consumer_loop, name=f"SDR{self.device}-analyze")
         self._consumer_thread.start()
@@ -515,16 +548,32 @@ class SignalAnalyzer(multiprocessing.Process):
         if self.sdr is not None:
             self.sdr.cancel_read_async()
 
-    def update_state(self, ts: datetime.datetime, state: StateMessage.State):
-        # skip update if there is a state
-        if self.last_state:
+    def update_state(
+        self,
+        ts: datetime.datetime,
+        state: StateMessage.State,
+        *,
+        peak_db: float | None = None,
+        rms_db: float | None = None,
+        snr_db: float | None = None,
+    ):
+        has_metrics = peak_db is not None
+        # skip update if there is a state (unless publishing spectrogram metrics)
+        if self.last_state and not has_metrics:
             # the state is different
             if self.last_state.state == state:
                 # the state's timeout isn't over
                 if self.last_state.ts + datetime.timedelta(seconds=self.state_update_s) >= ts.astimezone():
                     return
 
-        self.last_state = StateMessage(self.device, ts.astimezone(), state)
+        self.last_state = StateMessage(
+            self.device,
+            ts.astimezone(),
+            state,
+            peak_db=peak_db,
+            rms_db=rms_db,
+            snr_db=snr_db,
+        )
         self.signal_queue.put(self.last_state)
 
     def consume_signal(self, signal: Signal):
