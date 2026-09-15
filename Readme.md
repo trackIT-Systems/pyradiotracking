@@ -109,7 +109,7 @@ For larger buffers, as preferable for high sampling rates in terms of effificien
 
 USB/async callbacks only copy IQ into an internal ring buffer (capacity `sample_rate * sdr_timeout_s` samples). A separate thread runs the spectrogram and detection on fixed **analysis** chunks (`analysis_block_samples`, default about **0.1 s** of IQ at `sample_rate`, rounded up to a multiple of `fft_nperseg`). This decouples `sdr_callback_length` (USB transfer size) from FFT block size.
 
-Signal timestamps follow a **sample-count timeline** (wall time anchors the first consumed chunk; later chunk starts advance by `samples / sample_rate`). Stall detection still uses wall time: `SIGALRM` / `sdr_timeout_s` and the parent watchdog if no USB callbacks arrive.
+Signal timestamps follow a **sample-count timeline** (wall time anchors the first consumed chunk; later chunk starts advance by `samples / sample_rate`). Stall detection uses wall time: child `SIGALRM` / `sdr_timeout_s` after USB callbacks begin, and the parent watchdog if no USB callbacks arrive (startup grace while opening the dongle, then `sdr_timeout_s` after async read starts). Child `SIGALRM` cannot interrupt a hang inside libusb; the parent then `SIGTERM`s and `SIGKILL`s the child.
 
 If the ring fills (analysis cannot keep up), the analyzer stops and the normal per-device restart logic applies. Avoid overload with less expensive analysis settings, or increase `sdr_timeout_s` only if you accept a larger ring backlog.
 

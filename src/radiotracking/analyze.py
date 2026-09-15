@@ -75,6 +75,8 @@ class SignalAnalyzer(multiprocessing.Process):
         The multiprocessing queue to put the signals in.
     last_data_ts: multiprocessing.Value
         The multiprocessing value to put the last data timestamp in.
+    streaming_ts: multiprocessing.Value
+        Wall time when async USB streaming was entered; 0 until read_samples_async is about to start.
     status_interval: float
         Wall-clock interval (s) between aggregated spectrogram metrics in state messages; <= 0 disables.
     """
@@ -104,6 +106,7 @@ class SignalAnalyzer(multiprocessing.Process):
         analysis_block_samples: int | None,
         signal_queue: multiprocessing.Queue,
         last_data_ts: Synchronized,
+        streaming_ts: Synchronized,
         status_interval: float = 60.0,
         **kwargs,
     ):
@@ -157,6 +160,7 @@ class SignalAnalyzer(multiprocessing.Process):
 
         self.signal_queue = signal_queue
         self.last_data_ts = last_data_ts
+        self.streaming_ts = streaming_ts
 
         self._spectrogram_last: None | np.ndarray = None
         self._last_recv_wall: datetime.datetime | None = None
@@ -404,17 +408,26 @@ class SignalAnalyzer(multiprocessing.Process):
         logging.basicConfig(level=logging_level)
 
         # setup sdr
-        sdr = rtlsdr.rtlsdr.RtlSdr(self.device_index)
-        sdr.sample_rate = self.sample_rate
-        # update configured sample rate with technically possible rate compured by library
-        if self.sample_rate != sdr.sample_rate:
-            logger.info("adjusting sample rate according to hardware properties: %s", sdr.sample_rate)
-            self.sample_rate = sdr.sample_rate
-        sdr.center_freq = self.center_freq
+        try:
+            sdr = rtlsdr.rtlsdr.RtlSdr(self.device_index)
+            sdr.sample_rate = self.sample_rate
+            # update configured sample rate with technically possible rate computed by library
+            if self.sample_rate != sdr.sample_rate:
+                logger.info("adjusting sample rate according to hardware properties: %s", sdr.sample_rate)
+                self.sample_rate = sdr.sample_rate
+            sdr.center_freq = self.center_freq
 
-        effective_bandwidth = self.tuner_bandwidth if self.tuner_bandwidth != 0 else 2 * self.sample_rate
-        sdr.bandwidth = effective_bandwidth
-        logger.info("SDR %s: tuner bandwidth set to %s Hz (applied: %s Hz)", self.device, effective_bandwidth, sdr.bandwidth)
+            effective_bandwidth = self.tuner_bandwidth if self.tuner_bandwidth != 0 else 2 * self.sample_rate
+            sdr.bandwidth = effective_bandwidth
+            logger.info(
+                "SDR %s: tuner bandwidth set to %s Hz (applied: %s Hz)",
+                self.device,
+                effective_bandwidth,
+                sdr.bandwidth,
+            )
+        except rtlsdr.rtlsdr.LibUSBError as err:
+            logger.warning("SDR %s: could not open or configure (%s).", self.device, err)
+            sys.exit(1)
 
         try:
             if self.lna_gain not in range(0, 16):
@@ -498,6 +511,7 @@ class SignalAnalyzer(multiprocessing.Process):
 
         signal.signal(signal.SIGALRM, self.handle_signal)
         signal.alarm(self.sdr_timeout_s)
+        self.streaming_ts.value = time.time()
 
         try:
             self.sdr.read_samples_async(self._producer_enqueue, self.sdr_callback_length)

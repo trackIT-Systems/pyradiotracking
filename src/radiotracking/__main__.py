@@ -10,6 +10,7 @@ import platform
 import signal
 import socket
 import subprocess
+import time
 from ast import literal_eval
 from typing import List
 
@@ -22,6 +23,10 @@ from radiotracking.consume import ProcessConnector
 from radiotracking.match import SignalMatcher
 
 logger = logging.getLogger("radiotracking")
+
+# Floor for waiting on RtlSdr() open/config before treating the child as stalled.
+# --sdr-timeout-s is typically a few seconds and is too short for USB init.
+SDR_STARTUP_GRACE_S = 15.0
 
 
 class Runner:
@@ -184,7 +189,14 @@ class Runner:
             dargs.sdr_max_restart = sdr_max_restart
 
         last_data_ts = multiprocessing.Value("d", 0.0)
-        analyzer = SignalAnalyzer(signal_queue=self.connector.q, last_data_ts=last_data_ts, **vars(dargs))
+        streaming_ts = multiprocessing.Value("d", 0.0)
+        analyzer = SignalAnalyzer(
+            signal_queue=self.connector.q,
+            last_data_ts=last_data_ts,
+            streaming_ts=streaming_ts,
+            **vars(dargs),
+        )
+        analyzer.started_at = time.time()
         analyzer.start()
 
         if not self.args.sdr_dynamic_scheduling:
@@ -279,26 +291,42 @@ class Runner:
         Check if all analyzer threads are still running.
         """
         now = datetime.datetime.now()
+        now_ts = datetime.datetime.timestamp(now)
 
         # iterate the analyzer copy to allow for altering (restarting) analyzers
         for analyzer in self.analyzers.copy():
             # check if the process itself is running
             if analyzer.is_alive():
-                # check if analyzer has started yet
-                if analyzer.last_data_ts.value == 0.0:
-                    continue
+                streaming_ts = analyzer.streaming_ts.value
+                last_data_ts = analyzer.last_data_ts.value
 
-                # check if last data timestamp is within timeout
-                if analyzer.last_data_ts.value > datetime.datetime.timestamp(now) - analyzer.sdr_timeout_s:
+                if streaming_ts == 0.0:
+                    startup_grace_s = max(float(analyzer.sdr_timeout_s), SDR_STARTUP_GRACE_S)
+                    if now_ts - analyzer.started_at <= startup_grace_s:
+                        continue
+                    logger.warning(
+                        "SDR %s did not start USB streaming within %.1fs; timed out.",
+                        analyzer.device,
+                        startup_grace_s,
+                    )
+                elif last_data_ts == 0.0:
+                    if now_ts - streaming_ts <= analyzer.sdr_timeout_s:
+                        continue
+                    logger.warning(
+                        "SDR %s never received USB data after streaming started; timed out.",
+                        analyzer.device,
+                    )
+                elif last_data_ts > now_ts - analyzer.sdr_timeout_s:
                     logger.info(
-                        f"SDR {analyzer.device} received last data {datetime.datetime.fromtimestamp(analyzer.last_data_ts.value)}"
+                        f"SDR {analyzer.device} received last data {datetime.datetime.fromtimestamp(last_data_ts)}"
                     )
                     continue
+                else:
+                    logger.warning(
+                        f"SDR {analyzer.device} received last data {datetime.datetime.fromtimestamp(last_data_ts)}; timed out."
+                    )
 
                 # kill timed out analyzer
-                logger.warning(
-                    f"SDR {analyzer.device} received last data {datetime.datetime.fromtimestamp(analyzer.last_data_ts.value)}; timed out."
-                )
                 self._put_analyzer_stopped_state(analyzer)
                 analyzer.terminate()
                 self._join_analyzer_or_kill(analyzer)
