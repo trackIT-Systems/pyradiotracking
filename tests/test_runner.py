@@ -280,6 +280,20 @@ class TestStopAndTerminate:
         assert a.terminated
         assert r._terminate_in_progress is False
 
+    def test_stopped_states_are_published_after_terminate(self, make_runner):
+        r = make_runner()
+        published = []
+        r.connector.consumers.append(SimpleNamespace(add=published.append))
+        a = FakeAnalyzer()
+        a.signal_queue = r.connector.q
+        r.analyzers = [a]
+        r.terminate(signal.SIGTERM)
+        # the consumers are still running, the main loop drains the queue before it stops them
+        assert not r.connector._connector_shutdown
+        while r.connector.step(datetime.timedelta(seconds=0.5)):
+            pass
+        assert [m.state for m in published] == [StateMessage.State.STOPPED]
+
     def test_nested_terminate_is_ignored(self, make_runner):
         r = make_runner()
         r._terminate_in_progress = True

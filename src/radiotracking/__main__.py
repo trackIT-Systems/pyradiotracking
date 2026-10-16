@@ -348,9 +348,9 @@ class Runner:
             return
         self._terminate_in_progress = True
         try:
+            # the main loop publishes what is still queued (e.g. the STOPPED states of the analyzers) after it ends, and
+            # then stops the consumers; publishing via MQTT does not block, so a stuck broker cannot block this path
             self.running = False
-            # Stop MQTT first so a stuck broker cannot block this path.
-            self.connector.shutdown()
 
             logger.warning(f"Caught {signal.Signals(sig).name}, terminating {len(self.analyzers)} analyzers.")
 
