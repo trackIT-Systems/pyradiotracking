@@ -202,8 +202,7 @@ class SignalAnalyzer(multiprocessing.Process):
         r82xx_lna_gain_steps = [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13]
         if self.lna_gain < 0 or self.lna_gain >= len(r82xx_lna_gain_steps):
             raise ValueError(
-                "lna_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_lna_gain_steps[]",
-                self.lna_gain,
+                "lna_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_lna_gain_steps[]" % self.lna_gain
             )
 
         total_gain = 0
@@ -216,8 +215,7 @@ class SignalAnalyzer(multiprocessing.Process):
         r82xx_mixer_gain_steps = [0, 5, 10, 10, 19, 9, 10, 25, 17, 10, 8, 16, 13, 6, 3, -8]
         if self.mixer_gain < 0 or self.mixer_gain >= len(r82xx_mixer_gain_steps):
             raise ValueError(
-                "mixer_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_mixer_gain_steps[]",
-                self.mixer_gain,
+                "mixer_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_mixer_gain_steps[]" % self.mixer_gain
             )
 
         total_gain = 0
@@ -230,8 +228,7 @@ class SignalAnalyzer(multiprocessing.Process):
         r82xx_vga_gain_steps = [0, 26, 26, 30, 42, 35, 24, 13, 14, 32, 36, 34, 35, 37, 35, 36]
         if self.vga_gain < 0 or self.vga_gain >= len(r82xx_vga_gain_steps):
             raise ValueError(
-                "vga_gain index %s not in 0 .. 15: 0 == -12 dB; 15 == 40.5 dB; => 3.5 dB/step",
-                self.vga_gain,
+                "vga_gain index %s not in 0 .. 15: 0 == -12 dB; 15 == 40.5 dB; => 3.5 dB/step" % self.vga_gain
             )
 
         total_gain = 0
@@ -440,17 +437,15 @@ class SignalAnalyzer(multiprocessing.Process):
         try:
             if self.lna_gain not in range(0, 16):
                 raise ValueError(
-                    "lna_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_lna_gain_steps[]",
-                    self.lna_gain,
+                    "lna_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_lna_gain_steps[]" % self.lna_gain
                 )
             if self.mixer_gain not in range(0, 16):
                 raise ValueError(
-                    "mixer_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_mixer_gain_steps[]",
-                    self.mixer_gain,
+                    "mixer_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_mixer_gain_steps[]" % self.mixer_gain
                 )
             if self.vga_gain not in range(0, 16):
                 raise ValueError(
-                    "vga_gain index %s not in 0 .. 15: 0 == -12 dB; 15 == 40.5 dB; => 3.5 dB/step", self.vga_gain
+                    "vga_gain index %s not in 0 .. 15: 0 == -12 dB; 15 == 40.5 dB; => 3.5 dB/step" % self.vga_gain
                 )
             sdr.set_manual_gain_enabled(True)
             sdr.set_agc_mode(False)
@@ -471,7 +466,7 @@ class SignalAnalyzer(multiprocessing.Process):
                     sdr.gain,
                 )
             else:
-                raise RuntimeError("Failed setting gain using rtlsdr_set_tuner_gain_ext (%s)", ret)
+                raise RuntimeError("Failed setting gain using rtlsdr_set_tuner_gain_ext (%s)" % ret)
         except (AttributeError, ValueError, RuntimeError) as err:
             logger.warning("Error setting gain manually: %s", err)
             sdr.gain = float(self.gain)

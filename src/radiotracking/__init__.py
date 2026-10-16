@@ -284,7 +284,7 @@ class MatchedSignal(AbstractSignal):
         return f"MatchedSignal({self.devices}, {self.ts}, {self.frequency}, {self.duration}, {avgs_str})"
 
     def __str__(self):
-        avgs_str = ", ".join([f"{avg:.2f}" if avg else f"{None}" for avg in self._avgs])
+        avgs_str = ", ".join([f"{avg:.2f}" if avg is not None else f"{None}" for avg in self._avgs])
         return f"{self.__class__.__name__}<SDRs {self.devices}, {self.frequency/1000/1000:.3f} MHz, {self.duration.total_seconds()*1000:.2f} ms, dBWs: [{avgs_str}]>"
 
 

@@ -21,6 +21,8 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 ### Fixed
 
 - Analyzers that hang after opening the device before the first USB sample are restarted
+- Error messages for invalid `lna_gain`, `mixer_gain` and `vga_gain` values showed the raw format string and a tuple
+- `MatchedSignal` printed a power of exactly 0.0 dBW as `None`
 - `write_config(help=True)` (`etc/generate-example-config.py`) raised on Python 3.14 and lowercased the help texts on 3.13; configs are written without ConfigParser now, and read without `%` interpolation
 - Decoding CBOR messages with `uncborify` (`etc/mqtt-stream.py`) failed with cbor2 6, which calls tag hooks with different arguments
 - A consumer (CSV, MQTT, matcher) raising an exception no longer keeps the remaining consumers from receiving the message, the error is logged instead

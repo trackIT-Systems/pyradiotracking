@@ -125,12 +125,13 @@ class TestGain:
         with pytest.raises(ValueError):
             getattr(an, f"_r82xx_get_{getter}_gain")()
 
-    @pytest.mark.xfail(strict=True, reason="ValueError is raised with (format, arg) instead of a formatted message")
-    def test_error_message_is_formatted(self):
-        an = make_analyzer(lna_gain=16)
+    @pytest.mark.parametrize("field,getter", [("lna_gain", "lna"), ("mixer_gain", "mixer"), ("vga_gain", "vga")])
+    def test_error_message_is_formatted(self, field, getter):
+        an = make_analyzer()
+        setattr(an, field, 16)
         with pytest.raises(ValueError) as exc:
-            an._r82xx_get_lna_gain()
-        assert "%s" not in str(exc.value)
+            getattr(an, f"_r82xx_get_{getter}_gain")()
+        assert str(exc.value).startswith(f"{field} index 16 not in 0 .. 15")
 
 
 class TestRingBuffer:

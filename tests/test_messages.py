@@ -71,10 +71,10 @@ class TestMatchedSignal:
         assert "-50.00" in str(msig)
         assert "None" in str(msig)
 
-    @pytest.mark.xfail(strict=True, reason="__str__ tests `if avg`, so a power of exactly 0.0 dBW is printed as None")
     def test_str_with_zero_avg(self):
         msig = MatchedSignal(["0"], T0, 150e6, 0.02, 0.0)
         assert "None" not in str(msig)
+        assert "0.00" in str(msig)
 
 
 class TestMatchingSignal:
