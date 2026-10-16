@@ -624,3 +624,68 @@ class TestBlockBoundaries:
         assert (sigs[0].ts - T0).total_seconds() == pytest.approx(16 * SEG_S, abs=US)
 
 
+class TestStreaming:
+    """The callback, ring and consumer thread together, without an SDR."""
+
+    @pytest.fixture
+    def an(self):
+        import threading
+
+        an = make_analyzer(sdr_timeout_s=5)
+        an.last_state = None
+        an.analysis_block_samples = an._finalize_analysis_block_samples()
+        an._ring_capacity = int(FS * an.sdr_timeout_s)
+        an._ring_buffer = np.empty(an._ring_capacity, dtype=np.complex64)
+        an._ring_cv = threading.Condition()
+        an._consumer_stop = threading.Event()
+        an.sdr = type("Sdr", (), {"cancelled": False, "cancel_read_async": lambda self: setattr(self, "cancelled", True)})()
+        yield an
+        signal.alarm(0)
+
+    def signals(self, an):
+        out = []
+        while not an.signal_queue.empty():
+            msg = an.signal_queue.get_nowait()
+            if isinstance(msg, Signal):
+                out.append(msg)
+        return out
+
+    def test_sample_clock_starts_one_buffer_before_the_first_callback(self, an):
+        before = datetime.datetime.now()
+        an._producer_enqueue(np.zeros(131072, dtype=np.complex64), None)
+        after = datetime.datetime.now()
+        offset = datetime.timedelta(seconds=131072 / FS)
+        assert before - offset <= an._sample_clock_t0 <= after - offset
+
+    def test_bursts_are_detected_across_callbacks_and_blocks(self, an):
+        import threading
+
+        n = 4 * an.analysis_block_samples
+        iq = burst_iq(n, 0.29, 0.02) + burst_iq(n, 0.75, 0.025, tone_bin=-20, noise=0)
+        consumer = threading.Thread(target=an._analysis_consumer_loop)
+        consumer.start()
+        # odd callback lengths, the blocks do not align with them
+        for i in range(0, n, 131072):
+            an._producer_enqueue(iq[i : i + 131072], None)
+        an._consumer_stop.set()
+        with an._ring_cv:
+            an._ring_cv.notify_all()
+        consumer.join(timeout=10)
+        assert not consumer.is_alive()
+
+        sigs = self.signals(an)
+        assert [round((s.frequency - CENTER) / BIN_HZ) for s in sigs] == [TONE_BIN, -20]
+        t0 = an._sample_clock_t0
+        assert [(s.ts - t0.astimezone()).total_seconds() for s in sigs] == pytest.approx([0.29, 0.75], abs=SEG_S)
+        # the bursts are not aligned to segments, the partially covered segments at both edges count for a strong one
+        assert [s.duration.total_seconds() for s in sigs] == pytest.approx([0.02, 0.025], abs=2 * SEG_S)
+
+    def test_ring_overflow_stops_streaming(self, an):
+        an._producer_enqueue(np.zeros(an._ring_capacity - 10, dtype=np.complex64), None)
+        assert not an.sdr.cancelled
+        an._producer_enqueue(np.zeros(11, dtype=np.complex64), None)
+        assert an.sdr.cancelled
+        assert an._consumer_stop.is_set()
+        assert an.last_state.state is StateMessage.State.STOPPED
+
+

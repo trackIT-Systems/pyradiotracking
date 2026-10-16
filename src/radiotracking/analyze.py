@@ -335,6 +335,9 @@ class SignalAnalyzer(multiprocessing.Process):
         assert self._consumer_stop is not None
         ring_overflow = False
         with self._ring_cv:
+            # the first sample of the stream was taken one buffer before the buffer was received
+            if self._sample_clock_t0 is None:
+                self._sample_clock_t0 = ts_recv - datetime.timedelta(seconds=len(buffer) / self.sample_rate)
             if not self._ring_push(buffer):
                 logger.critical(
                     "SDR %s sample ring overflow (capacity %s samples ~%.3f s, occupied %s, "
