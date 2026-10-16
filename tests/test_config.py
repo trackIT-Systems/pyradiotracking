@@ -104,6 +104,13 @@ def test_percent_in_values_survives_roundtrip(tmp_path):
     assert parser.read_config(str(path))["station"] == "100%"
 
 
+def test_analysis_defaults(tmp_path):
+    args = parser.parse_args(["--config", str(tmp_path / "none.ini")])
+    assert args.analysis_block_samples is None
+    assert args.signal_min_duration_ms == 8
+    assert args.signal_max_duration_ms == 50
+
+
 def test_station_default_is_hostname(tmp_path):
     import platform
 
@@ -161,3 +168,8 @@ class TestRemovedOptions:
     def test_schedule_is_not_a_command_line_option(self, tmp_path):
         with pytest.raises(SystemExit):
             parser.parse_args(["--config", str(tmp_path / "none.ini"), "--schedule", "10:00-11:00"])
+
+
+def test_analysis_block_samples_is_read_from_the_config(tmp_path):
+    cfg = write(tmp_path, "[analysis]\nanalysis_block_samples = 30208\n")
+    assert parser.parse_args(["--config", cfg]).analysis_block_samples == 30208

@@ -15,7 +15,7 @@ from ast import literal_eval
 from typing import List
 
 from radiotracking import StateMessage
-from radiotracking.analyze import SignalAnalyzer
+from radiotracking.analyze import SignalAnalyzer, resolve_block_samples, warn_if_block_too_short
 from radiotracking.config import ArgConfParser
 from radiotracking.consume import ProcessConnector
 from radiotracking.match import SignalMatcher
@@ -108,11 +108,11 @@ class Runner:
         "-l", "--signal-min-duration-ms", help="lower limit for signal duration (ms)", type=float, default=8
     )
     analysis_options.add_argument(
-        "-u", "--signal-max-duration-ms", help="upper limit for signal duration (ms)", type=float, default=40
+        "-u", "--signal-max-duration-ms", help="upper limit for signal duration (ms)", type=float, default=50
     )
     analysis_options.add_argument(
         "--analysis-block-samples",
-        help="IQ samples per spectrogram/detection chunk (default: ~0.1 s at sample_rate, aligned to fft_nperseg)",
+        help="IQ samples per spectrogram/detection chunk (default: 0.3 s at sample_rate, aligned to fft_nperseg)",
         default=None,
         type=int,
     )
@@ -381,6 +381,12 @@ class Runner:
         elif len(self.args.calibration) != len(self.args.device):
             logger.critical(f"Calibration values {self.args.calibration} do not match devices {self.args.device}.")
             exit(1)
+
+        # warn if long signals can not be detected well with the analysis block
+        block_samples = resolve_block_samples(
+            self.args.sample_rate, self.args.fft_nperseg, self.args.analysis_block_samples
+        )
+        warn_if_block_too_short(block_samples, self.args.sample_rate, self.args.signal_max_duration_ms)
 
         # export configuration
         if self.args.export_config:

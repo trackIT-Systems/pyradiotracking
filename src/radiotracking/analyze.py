@@ -17,17 +17,66 @@ from radiotracking import Signal, StateMessage, dB, from_dB
 logger = logging.getLogger(__name__)
 
 
-def default_analysis_block_samples(
-    sample_rate: float, fft_nperseg: int, block_duration_s: float = 0.1
-) -> int:
+LN2 = float(np.log(2))
+"""Median of an exponential distribution in units of its mean, see :meth:`SignalAnalyzer.extract_signals`."""
+
+DEFAULT_ANALYSIS_BLOCK_S = 0.3
+"""Duration of IQ per analysis block if ``analysis_block_samples`` is not configured."""
+
+RECOMMENDED_BLOCK_TO_MAX_DURATION = 6
+"""The analysis block should be at least this many times as long as the longest accepted signal."""
+
+
+def resolve_block_samples(sample_rate: float, fft_nperseg: int, configured: int | None = None) -> int:
     """
-    Default segment-aligned analysis block: ``block_duration_s`` of IQ (rounded), at least one FFT segment.
+    Number of IQ samples per analysis block, aligned to (rounded up to a multiple of) ``fft_nperseg``.
+
+    Parameters
+    ----------
+    sample_rate: float
+        The sample rate in Hz.
+    fft_nperseg: int
+        The number of samples per FFT segment.
+    configured: int | None
+        The configured ``analysis_block_samples``, None resolves to ``DEFAULT_ANALYSIS_BLOCK_S`` of IQ.
     """
     if fft_nperseg <= 0:
         raise ValueError("fft_nperseg must be positive")
-    raw = max(fft_nperseg, int(round(block_duration_s * sample_rate)))
+    raw = int(configured) if configured is not None else int(round(DEFAULT_ANALYSIS_BLOCK_S * sample_rate))
+    raw = max(fft_nperseg, raw)
     q, r = divmod(raw, fft_nperseg)
     return raw if r == 0 else (q + 1) * fft_nperseg
+
+
+def warn_if_block_too_short(block_samples: int, sample_rate: float, signal_max_duration_ms: float) -> bool:
+    """
+    Log a warning if the analysis block is short compared to the longest accepted signal.
+
+    A signal is only detected if it ends in the block it is analysed in and starts at most one block earlier. The noise
+    level of every frequency is estimated per block as well, and the longer a signal is compared to the block, the more
+    it raises that estimate, which makes the signal need a higher SNR to be detected.
+
+    Returns
+    -------
+    bool
+        True if a warning was logged.
+    """
+    block_s = block_samples / sample_rate
+    recommended_s = RECOMMENDED_BLOCK_TO_MAX_DURATION * signal_max_duration_ms / 1000
+    if block_s >= recommended_s:
+        return False
+
+    logger.warning(
+        "The analysis block (%d samples, %.3f s) is shorter than %d times signal_max_duration_ms (%g ms, i.e. %.3f s). "
+        "Long signals will need a higher SNR to be detected, or can not be detected at all. "
+        "Increase analysis_block_samples or lower signal_max_duration_ms.",
+        block_samples,
+        block_s,
+        RECOMMENDED_BLOCK_TO_MAX_DURATION,
+        signal_max_duration_ms,
+        recommended_s,
+    )
+    return True
 
 
 class SignalAnalyzer(multiprocessing.Process):
@@ -70,7 +119,8 @@ class SignalAnalyzer(multiprocessing.Process):
     sdr_callback_length: int
         The length of the SDR async read callback in samples (USB stack).
     analysis_block_samples: int | None
-        Samples per spectrogram/detection chunk; None uses ~0.1 s of IQ, rounded up to a multiple of fft_nperseg.
+        Samples per spectrogram/detection chunk, rounded up to a multiple of fft_nperseg. None uses 0.3 s of IQ.
+        Should be at least 6 times signal_max_duration_ms.
     signal_queue: multiprocessing.Queue
         The multiprocessing queue to put the signals in.
     last_data_ts: multiprocessing.Value
@@ -186,17 +236,8 @@ class SignalAnalyzer(multiprocessing.Process):
         self._status_rms: list[float] = []
         self._last_status_ts: datetime.datetime | None = None
 
-    def _align_block_to_fft(self, n: int) -> int:
-        n = max(self.fft_nperseg, n)
-        q, r = divmod(n, self.fft_nperseg)
-        if r:
-            n = (q + 1) * self.fft_nperseg
-        return n
-
     def _finalize_analysis_block_samples(self) -> int:
-        if self._analysis_block_samples_configured is not None:
-            return self._align_block_to_fft(int(self._analysis_block_samples_configured))
-        return default_analysis_block_samples(self.sample_rate, self.fft_nperseg)
+        return resolve_block_samples(self.sample_rate, self.fft_nperseg, self._analysis_block_samples_configured)
 
     def _r82xx_get_lna_gain(self) -> float:
         r82xx_lna_gain_steps = [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13]
@@ -478,7 +519,7 @@ class SignalAnalyzer(multiprocessing.Process):
         self._ring_capacity = int(self.sample_rate * self.sdr_timeout_s)
         if self._ring_capacity < self.analysis_block_samples:
             logger.critical(
-                "SDR %s: ring capacity (%s samples, sdr_timeout_s=%s) is smaller than analysis_block_samples=%s. "
+                "SDR %s: ring capacity (%s samples, sdr_timeout_s=%s) is smaller than the analysis block (%s samples). "
                 "Increase sdr_timeout_s or lower fft_nperseg / analysis_block_samples.",
                 self.device,
                 self._ring_capacity,
@@ -686,7 +727,7 @@ class SignalAnalyzer(multiprocessing.Process):
 
         # iterate over all frequencies
         for fi, fft in enumerate(spectrogram):
-            # set freq_avg to None to allow lazy evaluation
+            # set freq_avg (noise power of this frequency) to None to allow lazy evaluation
             freq_avg = None
             freq = freqs[fi] + self.center_freq
             ti_skip = 0
@@ -701,9 +742,11 @@ class SignalAnalyzer(multiprocessing.Process):
                 if fft[ti] < self.signal_threshold:
                     continue
 
-                # lazy computation for freq_avg
+                # The noise power is estimated by the median over time, which is not raised by the signal itself
+                # (a mean would be, by a stronger signal and the longer it lasts). The power of a noise-only bin is
+                # exponentially distributed, i.e. its median is ln(2) times its mean, which is divided out.
                 if freq_avg is None:
-                    freq_avg = np.mean(fft)
+                    freq_avg = np.median(fft) / LN2
 
                 # check if snr of sample is below threshold
                 if fft[ti] / freq_avg < self.snr_threshold:

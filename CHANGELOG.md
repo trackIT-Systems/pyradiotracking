@@ -10,6 +10,9 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 
 ### Changed
 
+- The default analysis block (`analysis_block_samples` unset) is 0.3 s of IQ (was 0.1 s). A warning is logged at startup if the block, default or configured, is shorter than 6 times `signal_max_duration_ms`
+- `signal_max_duration_ms` defaults to 50 (was 40), tags with up to 45 ms are detected
+- The noise level of a frequency is the median of its power over the block (divided by ln 2) instead of the mean. The mean was raised by the signal itself, so signals filling more than about 30 % of the block could not reach `snr_threshold_db` (with the old 0.1 s block: signals longer than ~32 ms were never detected at 5 dB). `noise_dBW` and `snr_dB` of signals are the true values now; weak, long signals are detected more readily
 - Python 3.12, 3.13 and 3.14 are supported (was >= 3.11); the test suite runs on all three, with cbor2 5 and 6
 
 ### Added

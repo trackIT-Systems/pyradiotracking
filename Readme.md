@@ -18,15 +18,15 @@ An example configuration with all options is provided in [etc/radiotracking.ini]
 ```bash
 $ radiotracking --config etc/radiotracking.ini --csv --path data
 $ radiotracking -h
-usage: radiotracking [-h] [-v] [--calibrate] [--config CONFIG] [--station STATION] [-d [DEVICE ...]]
-                     [-c [CALIBRATION ...]] [-f CENTER_FREQ] [-s SAMPLE_RATE] [-b SDR_CALLBACK_LENGTH] [-g GAIN] [--lna-gain LNA_GAIN]
-                     [--mixer-gain MIXER_GAIN] [--vga-gain VGA_GAIN] [--tuner-bandwidth TUNER_BANDWIDTH] [--sdr-max-restart SDR_MAX_RESTART]
-                     [--sdr-timeout-s SDR_TIMEOUT_S] [--sdr-dynamic-scheduling] [--state-update-s STATE_UPDATE_S]
-                     [--status-interval STATUS_INTERVAL] [-n FFT_NPERSEG] [-w FFT_WINDOW] [-t SIGNAL_THRESHOLD_DBW] [-r SNR_THRESHOLD_DB]
-                     [-l SIGNAL_MIN_DURATION_MS] [-u SIGNAL_MAX_DURATION_MS] [--analysis-block-samples ANALYSIS_BLOCK_SAMPLES]
-                     [--matching-timeout-s MATCHING_TIMEOUT_S] [-mt MATCHING_TIME_DIFF_S] [-mb MATCHING_BANDWIDTH_HZ]
-                     [-md MATCHING_DURATION_DIFF_MS] [--sig-stdout] [--match-stdout] [--path PATH] [--csv] [--export-config] [--mqtt]
-                     [--mqtt-host MQTT_HOST] [--mqtt-port MQTT_PORT] [--mqtt-qos MQTT_QOS] [--mqtt-keepalive MQTT_KEEPALIVE] [-mv]
+usage: radiotracking [-h] [-v] [--calibrate] [--config CONFIG] [--station STATION] [-d [DEVICE ...]] [-c [CALIBRATION ...]] [-f CENTER_FREQ]
+                     [-s SAMPLE_RATE] [-b SDR_CALLBACK_LENGTH] [-g GAIN] [--lna-gain LNA_GAIN] [--mixer-gain MIXER_GAIN] [--vga-gain VGA_GAIN]
+                     [--tuner-bandwidth TUNER_BANDWIDTH] [--sdr-max-restart SDR_MAX_RESTART] [--sdr-timeout-s SDR_TIMEOUT_S]
+                     [--sdr-dynamic-scheduling] [--state-update-s STATE_UPDATE_S] [--status-interval STATUS_INTERVAL] [-n FFT_NPERSEG]
+                     [-w FFT_WINDOW] [-t SIGNAL_THRESHOLD_DBW] [-r SNR_THRESHOLD_DB] [-l SIGNAL_MIN_DURATION_MS] [-u SIGNAL_MAX_DURATION_MS]
+                     [--analysis-block-samples ANALYSIS_BLOCK_SAMPLES] [--matching-timeout-s MATCHING_TIMEOUT_S] [-mt MATCHING_TIME_DIFF_S]
+                     [-mb MATCHING_BANDWIDTH_HZ] [-md MATCHING_DURATION_DIFF_MS] [--sig-stdout] [--match-stdout] [--path PATH] [--csv]
+                     [--export-config] [--mqtt] [--mqtt-host MQTT_HOST] [--mqtt-port MQTT_PORT] [--mqtt-qos MQTT_QOS]
+                     [--mqtt-keepalive MQTT_KEEPALIVE] [-mv]
 
 Detect signals of wildlife tracking systems with RTL SDR devices
 
@@ -78,9 +78,9 @@ analysis:
   -l, --signal-min-duration-ms SIGNAL_MIN_DURATION_MS
                         lower limit for signal duration (ms) (default: 8)
   -u, --signal-max-duration-ms SIGNAL_MAX_DURATION_MS
-                        upper limit for signal duration (ms) (default: 40)
+                        upper limit for signal duration (ms) (default: 50)
   --analysis-block-samples ANALYSIS_BLOCK_SAMPLES
-                        IQ samples per spectrogram/detection chunk (default: ~0.1 s at sample_rate, aligned to fft_nperseg) (default: None)
+                        IQ samples per spectrogram/detection chunk (default: 0.3 s at sample_rate, aligned to fft_nperseg) (default: None)
 
 matching:
   --matching-timeout-s MATCHING_TIMEOUT_S
@@ -141,7 +141,13 @@ For larger buffers, as preferable for high sampling rates in terms of effificien
 
 #### Sample buffer, timestamps, and stalls
 
-USB/async callbacks only copy IQ into an internal ring buffer (capacity `sample_rate * sdr_timeout_s` samples). A separate thread runs the spectrogram and detection on fixed **analysis** chunks (`analysis_block_samples`, default about **0.1 s** of IQ at `sample_rate`, rounded up to a multiple of `fft_nperseg`). This decouples `sdr_callback_length` (USB transfer size) from FFT block size.
+USB/async callbacks only copy IQ into an internal ring buffer (capacity `sample_rate * sdr_timeout_s` samples). A separate thread runs the spectrogram and detection on fixed **analysis** blocks (`analysis_block_samples`, default **0.3 s** of IQ at `sample_rate`, rounded up to a multiple of `fft_nperseg`). This decouples `sdr_callback_length` (USB transfer size) from the FFT block size.
+
+#### Signal detection and the analysis block
+
+A signal is detected if the power of a frequency bin stays above `signal_threshold_dbw` and `snr_threshold_db` over the noise level for `signal_min_duration_ms` to `signal_max_duration_ms`. The noise level of each frequency is the **median** of its power over the analysis block (divided by ln 2, which makes it the mean noise power), so it is not raised by the signal itself, and a changing noise floor across the band is accounted for.
+
+A signal has to end in the block it is analysed in, and it can start at most one block earlier. The block therefore has to be considerably longer than the longest signal, otherwise long signals need a higher SNR to be detected or are not detected at all. radiotracking logs a warning at startup if `analysis_block_samples` (explicitly configured or the default) is shorter than **6 times `signal_max_duration_ms`**; the defaults, 0.3 s and 50 ms, meet this exactly. The default block, the segment duration (`fft_nperseg / sample_rate`) and the bin width (`sample_rate / fft_nperseg`) are defined in time, so a wider band (e.g. `sample_rate = 1200000`) works with the same settings if `fft_nperseg` is scaled along (`1024`).
 
 Signal timestamps follow a **sample-count timeline** (wall time anchors the first consumed chunk; later chunk starts advance by `samples / sample_rate`). Stall detection uses wall time: child `SIGALRM` / `sdr_timeout_s` after USB callbacks begin, and the parent watchdog if no USB callbacks arrive (startup grace while opening the dongle, then `sdr_timeout_s` after async read starts). Child `SIGALRM` cannot interrupt a hang inside libusb; the parent then `SIGTERM`s and `SIGKILL`s the child.
 

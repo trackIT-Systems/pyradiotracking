@@ -1,4 +1,5 @@
 import datetime
+import logging
 import multiprocessing
 import queue
 import signal
@@ -8,7 +9,7 @@ import pytest
 import scipy.signal
 
 from radiotracking import Signal, StateMessage, dB
-from radiotracking.analyze import SignalAnalyzer, default_analysis_block_samples
+from radiotracking.analyze import SignalAnalyzer, resolve_block_samples, warn_if_block_too_short
 
 from .conftest import T0
 
@@ -73,24 +74,68 @@ def detect(an, iq, ts_start=T0):
     return an.filter_shadow_signals(sigs), spec
 
 
-def test_default_analysis_block_samples():
-    assert default_analysis_block_samples(FS, NPERSEG) == 118 * NPERSEG
-    assert default_analysis_block_samples(FS, NPERSEG) % NPERSEG == 0
-    assert default_analysis_block_samples(1000, 256) == 256
-    assert default_analysis_block_samples(FS, 300_000) == 300_000
+@pytest.mark.parametrize(
+    "sample_rate,nperseg,configured,expected",
+    [
+        (FS, 256, None, 90112),  # 0.3 s = 90000 samples, rounded up to 352 segments
+        (1_200_000, 1024, None, 360448),  # same duration and segment length as the default setup
+        (FS, 256, 30000, 30208),
+        (FS, 256, 30208, 30208),
+        (FS, 256, 1000, 1024),
+        (FS, 256, 1, 256),  # at least one segment
+        (1000, 256, None, 512),
+    ],
+)
+def test_resolve_block_samples(sample_rate, nperseg, configured, expected):
+    assert resolve_block_samples(sample_rate, nperseg, configured) == expected
+
+
+def test_resolve_block_samples_rejects_an_invalid_segment_length():
     with pytest.raises(ValueError):
-        default_analysis_block_samples(FS, 0)
+        resolve_block_samples(FS, 0)
 
 
-@pytest.mark.parametrize("n,expected", [(1, 256), (256, 256), (257, 512), (1000, 1024)])
-def test_analysis_block_alignment(n, expected):
-    assert make_analyzer()._align_block_to_fft(n) == expected
+def test_analyzer_resolves_its_block():
+    assert make_analyzer()._finalize_analysis_block_samples() == 352 * NPERSEG
+    assert make_analyzer(analysis_block_samples=1000)._finalize_analysis_block_samples() == 1024
+    # the hardware may adjust the sample rate after the analyzer was created
+    an = make_analyzer(sample_rate=250_000)
+    an.sample_rate = 1_200_000
+    assert an._finalize_analysis_block_samples() == resolve_block_samples(1_200_000, NPERSEG)
 
 
-def test_configured_block_size_wins():
-    an = make_analyzer(analysis_block_samples=1000)
-    assert an._finalize_analysis_block_samples() == 1024
-    assert make_analyzer()._finalize_analysis_block_samples() == 118 * NPERSEG
+class TestBlockWarning:
+    def test_default_block_is_long_enough_for_the_default_maximum_duration(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            assert not warn_if_block_too_short(resolve_block_samples(FS, NPERSEG), FS, 50)
+        assert caplog.text == ""
+
+    def test_exactly_six_times_is_fine(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            assert not warn_if_block_too_short(int(0.3 * FS), FS, 50)
+        assert caplog.text == ""
+
+    @pytest.mark.parametrize("block,max_ms", [(30208, 50), (int(0.29 * FS), 50), (90112, 60), (256, 8)])
+    def test_short_block_warns(self, block, max_ms, caplog):
+        with caplog.at_level(logging.WARNING):
+            assert warn_if_block_too_short(block, FS, max_ms)
+        assert "shorter than 6 times signal_max_duration_ms" in caplog.text
+        assert "analysis_block_samples" in caplog.text
+
+    def test_message_gives_the_numbers(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            warn_if_block_too_short(30208, FS, 50)
+        assert "30208 samples, 0.101 s" in caplog.text
+        assert "50 ms, i.e. 0.300 s" in caplog.text
+
+    def test_wide_band_block_is_judged_in_time(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            # 30208 samples are 25 ms at 1.2 MHz
+            assert warn_if_block_too_short(30208, 1_200_000, 50)
+            assert not warn_if_block_too_short(resolve_block_samples(1_200_000, 1024), 1_200_000, 50)
+
+    def test_analyzer_does_not_refuse_a_short_block(self):
+        make_analyzer(analysis_block_samples=30208, signal_max_duration_ms=50)
 
 
 def test_device_must_be_index_or_known_serial():
@@ -354,8 +399,35 @@ class TestExtractSignals:
         assert len(detect(make_analyzer(signal_threshold_dbw=-100), iq)[0]) == 1
 
     def test_two_tones_are_two_signals(self):
-        iq = burst_iq(30208, 0.03, 0.02, tone_bin=TONE_BIN) + burst_iq(30208, 0.08, 0.02, tone_bin=-50, noise=0)
+        iq = burst_iq(30208, 0.03, 0.02, tone_bin=TONE_BIN) + burst_iq(30208, 0.065, 0.02, tone_bin=-50, noise=0)
         sigs, _ = detect(make_analyzer(), iq)
+        assert sorted(round((s.frequency - CENTER) / BIN_HZ) for s in sigs) == [-50, TONE_BIN]
+
+    @pytest.mark.parametrize("dur_ms", [10, 20, 33, 40, 45])
+    @pytest.mark.parametrize("amp,threshold", [(1.0, -100), (4e-4, -120)])
+    def test_signals_of_10_to_45_ms_are_detected_in_the_default_block(self, dur_ms, amp, threshold):
+        # amp 4e-4 is ~11 dB above the noise, 1.0 is ~80 dB; the SNR must not depend on how long the signal lasts
+        an = make_analyzer(signal_max_duration_ms=50, signal_threshold_dbw=threshold)
+        block = an._finalize_analysis_block_samples()
+        sigs, _ = detect(an, burst_iq(block, 0.1, dur_ms / 1000, amp=amp))
+        assert len(sigs) == 1
+        assert sigs[0].duration.total_seconds() * 1000 == pytest.approx(dur_ms, abs=2)
+
+    @pytest.mark.parametrize("dur_ms", [10, 20, 45])
+    def test_noise_level_is_not_raised_by_the_signal(self, dur_ms):
+        # expected noise power density of complex noise with variance 2 * noise**2 at FS: 2e-6 / FS
+        an = make_analyzer(signal_max_duration_ms=50)
+        block = an._finalize_analysis_block_samples()
+        sigs, _ = detect(an, burst_iq(block, 0.1, dur_ms / 1000, amp=0.02))
+        assert sigs[0].noise == pytest.approx(dB(2e-6 / FS), abs=1.2)
+        assert sigs[0].snr > 40
+
+    def test_strong_signal_does_not_hide_a_weak_one_in_another_bin(self):
+        an = make_analyzer(signal_threshold_dbw=-120)
+        block = an._finalize_analysis_block_samples()
+        iq = burst_iq(block, 0.05, 0.02, tone_bin=TONE_BIN, amp=1.0) + burst_iq(block, 0.15, 0.02, tone_bin=-50, amp=4e-4, noise=0)
+        sigs, _ = detect(an, iq)
+        # the weak one is a shadow of nothing, as the strong one is not overlapping in time
         assert sorted(round((s.frequency - CENTER) / BIN_HZ) for s in sigs) == [-50, TONE_BIN]
 
     def test_burst_touching_the_end_waits_for_the_next_chunk(self):
@@ -397,10 +469,10 @@ class TestExtractSignals:
     @pytest.mark.parametrize("sample_rate,nperseg", [(300_000, 256), (1_200_000, 1024)])
     def test_wide_band_setup_behaves_like_the_default(self, sample_rate, nperseg):
         # 1.2 MHz with 1024 samples per segment has the same segment duration and bin width as the default,
-        # and the default block is 0.1 s in both cases
+        # and the default block is 0.3 s in both cases
         an = make_analyzer(sample_rate=sample_rate, fft_nperseg=nperseg)
         block = an._finalize_analysis_block_samples()
-        assert block / sample_rate == pytest.approx(0.1, abs=0.002)
+        assert block / sample_rate == pytest.approx(0.3, abs=0.002)
         assert nperseg / sample_rate == pytest.approx(256 / 300_000)
 
         iq = burst_iq(block, 0.03, 0.02, fs=sample_rate)

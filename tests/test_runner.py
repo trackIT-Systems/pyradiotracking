@@ -1,5 +1,6 @@
 import datetime
 import json
+import logging
 import queue
 import signal
 import socket
@@ -81,6 +82,27 @@ class TestInit:
         with pytest.raises(SystemExit) as exc:
             make_runner("-d", "0", "1", "-c", "1.0")
         assert exc.value.code == 1
+
+    def test_default_analysis_block_does_not_warn(self, make_runner, caplog):
+        with caplog.at_level(logging.WARNING):
+            make_runner()
+        assert "analysis block" not in caplog.text
+
+    def test_short_analysis_block_warns(self, make_runner, caplog):
+        with caplog.at_level(logging.WARNING):
+            r = make_runner("--analysis-block-samples", "30208")
+        assert r.args.analysis_block_samples == 30208
+        assert "The analysis block (30208 samples, 0.101 s) is shorter than 6 times signal_max_duration_ms" in caplog.text
+
+    def test_long_signals_warn_with_the_default_block(self, make_runner, caplog):
+        with caplog.at_level(logging.WARNING):
+            make_runner("--signal-max-duration-ms", "100")
+        assert "shorter than 6 times signal_max_duration_ms (100 ms" in caplog.text
+
+    def test_block_is_judged_in_time_for_a_wide_band(self, make_runner, caplog):
+        with caplog.at_level(logging.WARNING):
+            make_runner("--sample-rate", "1200000", "--fft-nperseg", "1024")
+        assert "analysis block" not in caplog.text
 
     def test_installs_termination_handlers(self, make_runner):
         make_runner()
