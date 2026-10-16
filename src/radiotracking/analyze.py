@@ -1,5 +1,6 @@
 import datetime
 import logging
+import math
 import multiprocessing
 import signal
 import sys
@@ -46,6 +47,72 @@ def resolve_block_samples(sample_rate: float, fft_nperseg: int, configured: int 
     raw = max(fft_nperseg, raw)
     q, r = divmod(raw, fft_nperseg)
     return raw if r == 0 else (q + 1) * fft_nperseg
+
+
+LIBRTLSDR_DEFAULT_CALLBACK_SAMPLES = 131072
+"""Samples per async callback librtlsdr uses if the requested length is invalid (16 * 32 * 512 bytes)."""
+
+CALLBACK_SAMPLES_MULTIPLE = 256
+"""librtlsdr only accepts async buffers of a multiple of 512 bytes, i.e. 256 IQ samples, otherwise it uses its default."""
+
+
+def resolve_callback_length(configured: int | None = None) -> int:
+    """
+    Number of IQ samples per SDR async callback, as librtlsdr will actually deliver them.
+
+    librtlsdr silently replaces a buffer length that is not a multiple of 512 bytes by its default, so the configured
+    length is rounded to the nearest multiple of 256 samples (with a warning), None resolves to the librtlsdr default.
+
+    Parameters
+    ----------
+    configured: int | None
+        The configured ``sdr_callback_length``.
+    """
+    if configured is None:
+        return LIBRTLSDR_DEFAULT_CALLBACK_SAMPLES
+    configured = int(configured)
+    if configured <= 0:
+        raise ValueError("sdr_callback_length must be positive")
+    rounded = max(1, round(configured / CALLBACK_SAMPLES_MULTIPLE)) * CALLBACK_SAMPLES_MULTIPLE
+    if rounded != configured:
+        logger.warning(
+            "sdr_callback_length %d is not a multiple of %d samples (librtlsdr would ignore it), using %d.",
+            configured,
+            CALLBACK_SAMPLES_MULTIPLE,
+            rounded,
+        )
+    return rounded
+
+
+def resolve_ring_capacity(sample_rate: float, sdr_timeout_s: float, callback_length: int, block_samples: int) -> int:
+    """
+    Number of IQ samples the ring between the SDR callback and the analysis can hold.
+
+    The ring holds ``sdr_timeout_s`` of IQ, but at least one callback on top of an almost complete analysis block, as
+    the analysis only pops complete blocks and the callback pushes complete buffers.
+    """
+    return max(int(sample_rate * sdr_timeout_s), callback_length + block_samples)
+
+
+def resolve_sdr_timeout(sdr_timeout_s: int, callback_length: int, sample_rate: float, device: str = "") -> int:
+    """
+    Stall timeout (s) of an SDR, raised to at least 1.5 times the duration of a callback (in whole seconds).
+
+    The timeout (SIGALRM in the analyzer and the watchdog of the parent) is restarted with every callback, a timeout
+    shorter than the time between two callbacks would terminate a working SDR.
+    """
+    minimum = math.ceil(1.5 * callback_length / sample_rate)
+    if sdr_timeout_s >= minimum:
+        return sdr_timeout_s
+    logger.warning(
+        "SDR %s: sdr_timeout_s (%s s) is too short for a callback of %s samples (%.3f s), using %s s.",
+        device,
+        sdr_timeout_s,
+        callback_length,
+        callback_length / sample_rate,
+        minimum,
+    )
+    return minimum
 
 
 def warn_if_block_too_short(block_samples: int, sample_rate: float, signal_max_duration_ms: float) -> bool:
@@ -188,8 +255,7 @@ class SignalAnalyzer(multiprocessing.Process):
         self.mixer_gain = int(mixer_gain)
         self.vga_gain = int(vga_gain)
 
-        if sdr_callback_length is None:
-            sdr_callback_length = sample_rate
+        sdr_callback_length = resolve_callback_length(sdr_callback_length)
 
         self.tuner_bandwidth = tuner_bandwidth
         self.fft_nperseg = fft_nperseg
@@ -204,7 +270,7 @@ class SignalAnalyzer(multiprocessing.Process):
         self.verbose = verbose
 
         self.sdr_max_restart = sdr_max_restart
-        self.sdr_timeout_s = sdr_timeout_s
+        self.sdr_timeout_s = resolve_sdr_timeout(sdr_timeout_s, sdr_callback_length, sample_rate, device)
         self.state_update_s = state_update_s
         self.status_interval = status_interval
 
@@ -519,18 +585,9 @@ class SignalAnalyzer(multiprocessing.Process):
         self.sdr = sdr
 
         self.analysis_block_samples = self._finalize_analysis_block_samples()
-        self._ring_capacity = int(self.sample_rate * self.sdr_timeout_s)
-        if self._ring_capacity < self.analysis_block_samples:
-            logger.critical(
-                "SDR %s: ring capacity (%s samples, sdr_timeout_s=%s) is smaller than the analysis block (%s samples). "
-                "Increase sdr_timeout_s or lower fft_nperseg / analysis_block_samples.",
-                self.device,
-                self._ring_capacity,
-                self.sdr_timeout_s,
-                self.analysis_block_samples,
-            )
-            sys.exit(1)
-
+        self._ring_capacity = resolve_ring_capacity(
+            self.sample_rate, self.sdr_timeout_s, self.sdr_callback_length, self.analysis_block_samples
+        )
         logger.info(
             "SDR %s: analysis_block_samples=%s (~%.3f s), ring_capacity=%s (~%.3f s), sdr_callback_length=%s",
             self.device,

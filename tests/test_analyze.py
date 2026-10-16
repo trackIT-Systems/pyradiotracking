@@ -624,6 +624,45 @@ class TestBlockBoundaries:
         assert (sigs[0].ts - T0).total_seconds() == pytest.approx(16 * SEG_S, abs=US)
 
 
+@pytest.mark.parametrize(
+    "configured,expected",
+    [(None, 131072), (131072, 131072), (65536, 65536), (256, 256), (1, 256), (300000, 300032), (1000, 1024)],
+)
+def test_resolve_callback_length(configured, expected):
+    from radiotracking.analyze import resolve_callback_length
+
+    assert resolve_callback_length(configured) == expected
+
+
+def test_callback_length_that_librtlsdr_would_ignore_warns(caplog):
+    from radiotracking.analyze import resolve_callback_length
+
+    with caplog.at_level(logging.WARNING):
+        resolve_callback_length(131072)
+    assert caplog.text == ""
+    with caplog.at_level(logging.WARNING):
+        resolve_callback_length(300000)
+    assert "not a multiple of 256" in caplog.text
+
+
+@pytest.mark.parametrize("configured", [0, -256])
+def test_callback_length_must_be_positive(configured):
+    from radiotracking.analyze import resolve_callback_length
+
+    with pytest.raises(ValueError):
+        resolve_callback_length(configured)
+
+
+@pytest.mark.parametrize(
+    "timeout,callback,block,expected",
+    [(2, 131072, 90112, 600000), (1, 300032, 90112, 390144), (2, 1_000_000, 90112, 1_090_112)],
+)
+def test_ring_holds_a_callback_and_a_block(timeout, callback, block, expected):
+    from radiotracking.analyze import resolve_ring_capacity
+
+    assert resolve_ring_capacity(FS, timeout, callback, block) == expected
+
+
 class TestStreaming:
     """The callback, ring and consumer thread together, without an SDR."""
 
@@ -689,3 +728,18 @@ class TestStreaming:
         assert an.last_state.state is StateMessage.State.STOPPED
 
 
+@pytest.mark.parametrize(
+    "timeout,callback,expected",
+    [(2, 131072, 2), (1, 131072, 1), (1, 300032, 2), (2, 300032, 2), (1, 600064, 4), (5, 300032, 5), (1, 256, 1)],
+)
+def test_sdr_timeout_covers_a_callback(timeout, callback, expected):
+    from radiotracking.analyze import resolve_sdr_timeout
+
+    assert resolve_sdr_timeout(timeout, callback, FS) == expected
+
+
+def test_analyzer_raises_a_too_short_timeout(caplog):
+    with caplog.at_level(logging.WARNING):
+        an = make_analyzer(sdr_timeout_s=1, sdr_callback_length=300000)
+    assert an.sdr_timeout_s == 2
+    assert "sdr_timeout_s (1 s) is too short" in caplog.text

@@ -56,7 +56,11 @@ class Runner:
     )
     sdr_options.add_argument("-s", "--sample-rate", help="sample rate (Hz)", default=300000, type=int)
     sdr_options.add_argument(
-        "-b", "--sdr-callback-length", help="number of samples to read per batch", default=None, type=int
+        "-b",
+        "--sdr-callback-length",
+        help="number of samples to read per batch, rounded to a multiple of 256 (default: librtlsdr's 131072)",
+        default=None,
+        type=int,
     )
     sdr_options.add_argument("-g", "--gain", help="gain, supported levels 0.0 - 49.6", default="49.6", type=float)
 
@@ -73,7 +77,8 @@ class Runner:
     sdr_options.add_argument("--sdr-max-restart", help="maximal restart count per SDR device", default=3, type=int)
     sdr_options.add_argument(
         "--sdr-timeout-s",
-        help="Stall timeout (s) for SIGALRM/parent watchdog; also caps IQ ring size at sample_rate*timeout samples",
+        help="Stall timeout (s) for SIGALRM/parent watchdog; also sizes the IQ ring to sample_rate*timeout samples "
+        "(at least one callback and one analysis block)",
         default=2,
         type=int,
     )
