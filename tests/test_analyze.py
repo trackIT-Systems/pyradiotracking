@@ -8,8 +8,13 @@ import numpy as np
 import pytest
 import scipy.signal
 
-from radiotracking import Signal, StateMessage, dB
-from radiotracking.analyze import SignalAnalyzer, resolve_block_samples, warn_if_block_too_short
+from radiotracking import GainMessage, Signal, StateMessage, dB
+from radiotracking.analyze import (
+    R82XX_VGA_BASE_GAIN,
+    SignalAnalyzer,
+    resolve_block_samples,
+    warn_if_block_too_short,
+)
 
 from .conftest import T0
 
@@ -185,6 +190,22 @@ class TestGain:
         with pytest.raises(ValueError) as exc:
             getattr(an, f"_r82xx_get_{getter}_gain")()
         assert str(exc.value).startswith(f"{field} index 16 not in 0 .. 15")
+
+    @pytest.mark.parametrize(
+        "field,getter,expected",
+        [("lna_gain", "lna", "0.0 .. 33.5 dB"), ("mixer_gain", "mixer", "0.0 .. 16.1 dB"), ("vga_gain", "vga", "-4.7 .. 40.8 dB")],
+    )
+    def test_error_message_gives_the_measured_range(self, field, getter, expected):
+        an = make_analyzer()
+        setattr(an, field, -1)
+        with pytest.raises(ValueError, match=expected.replace(".", r"\.")):
+            getattr(an, f"_r82xx_get_{getter}_gain")()
+
+    def test_vga_steps_are_not_the_datasheet_ones(self):
+        # 3.5 dB per step from -12 dB would give 12.5 dB at index 7 and -5 dB at index 2
+        an = make_analyzer(vga_gain=7)
+        assert an._r82xx_get_vga_gain() + R82XX_VGA_BASE_GAIN / 10 == pytest.approx(14.9)
+        assert make_analyzer(vga_gain=2)._r82xx_get_vga_gain() + R82XX_VGA_BASE_GAIN / 10 == pytest.approx(0.5)
 
 
 class TestRingBuffer:
@@ -1166,3 +1187,80 @@ class TestCalibratedPowers:
         gains = {(15, 14, 15): 90.4, (15, 14, 3): 53.1, (15, 14, 7): 64.5, (15, 14, 11): 76.1}
         for (lna, mixer, vga), total in gains.items():
             assert make_analyzer(lna_gain=lna, mixer_gain=mixer, vga_gain=vga)._r82xx_get_gain() == pytest.approx(total)
+
+
+class TestGainSetup:
+    """The gain stages are set with rtlsdr_set_tuner_gain_ext, other cases are reported as a fallback."""
+
+    @pytest.fixture
+    def setup(self, monkeypatch):
+        import types
+
+        import rtlsdr.rtlsdr
+
+        calls = []
+
+        class FakeSdr:
+            dev_p = object()
+            gain = 49.6
+
+            def __init__(self, index):
+                self.sample_rate = FS
+
+            def set_manual_gain_enabled(self, enabled):
+                pass
+
+            def set_agc_mode(self, enabled):
+                pass
+
+            def close(self):
+                pass
+
+            def cancel_read_async(self):
+                pass
+
+            def read_bytes_async(self, *args):
+                raise rtlsdr.rtlsdr.LibUSBError("end")
+
+        def configure(ret=0, expect=rtlsdr.rtlsdr.LibUSBError, **over):
+            monkeypatch.setattr(rtlsdr.rtlsdr, "RtlSdr", FakeSdr)
+            monkeypatch.setattr(
+                rtlsdr,
+                "librtlsdr",
+                types.SimpleNamespace(rtlsdr_set_tuner_gain_ext=lambda *args: calls.append(args) or ret),
+                raising=False,
+            )
+            an = make_analyzer(**over)
+            with pytest.raises(expect) as exc:
+                an.run()
+            configure.error = exc.value
+            return an
+
+        configure.calls = calls
+        return configure
+
+    def test_stages_are_set_and_logged(self, setup, caplog):
+        with caplog.at_level(logging.WARNING):
+            an = setup(vga_gain=7)
+        assert setup.calls[0][1:] == (15, 14, 7)
+        assert an.total_gain_db == pytest.approx(64.5)
+        assert "LNA index 15 (33.5 dB) + mixer index 14 (16.1 dB) + VGA index 7 (14.9 dB) = 64.5 dB" in caplog.text
+
+    def test_gain_message_is_queued(self, setup):
+        an = setup(vga_gain=3)
+        msg = an.signal_queue.get_nowait()
+        assert isinstance(msg, GainMessage)
+        assert msg.gain_dB == pytest.approx(53.1)
+
+    def test_failed_call_falls_back_explicitly(self, setup, caplog):
+        with caplog.at_level(logging.WARNING):
+            an = setup(ret=-1)
+        assert an.total_gain_db is None
+        assert "the gain stages can not be set separately" in caplog.text
+        assert "set the gain to 49.6 dB" in caplog.text
+        assert an.signal_queue.get_nowait().gain_dB is None
+
+    def test_invalid_index_does_not_fall_back(self, setup):
+        setup(expect=ValueError, vga_gain=16)
+        assert "vga_gain index 16 not in 0 .. 15" in str(setup.error)
+        assert setup.calls == []

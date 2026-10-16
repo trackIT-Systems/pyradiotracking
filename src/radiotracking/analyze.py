@@ -1,4 +1,5 @@
 import datetime
+import itertools
 import logging
 import math
 import multiprocessing
@@ -17,6 +18,29 @@ import scipy.signal
 from radiotracking import GainMessage, Signal, SpectrumMessage, StateMessage, dB, from_dB
 
 logger = logging.getLogger(__name__)
+
+
+R82XX_LNA_GAIN_STEPS = [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13]
+R82XX_MIXER_GAIN_STEPS = [0, 5, 10, 10, 19, 9, 10, 25, 17, 10, 8, 16, 13, 6, 3, -8]
+R82XX_VGA_GAIN_STEPS = [0, 26, 26, 30, 42, 35, 24, 13, 14, 32, 36, 34, 35, 37, 35, 36]
+R82XX_VGA_BASE_GAIN = -47
+"""
+Gain of the R820T/R828D stages in 0.1 dB, the tables of librtlsdr (``tuner_r82xx.c``, measured by steve-m at 928 MHz):
+the gain of an index is the sum of the steps up to it, the VGA starts at ``R82XX_VGA_BASE_GAIN``. The VGA is not
+3.5 dB per step from -12 dB as the datasheet says: it ranges from -4.7 to 40.8 dB in uneven steps.
+"""
+
+
+def r82xx_stage_gain_db(steps: List[int], index: int, base: int = 0) -> float:
+    """The cumulative gain (dB) of the stage index, ValueError if there is no such index."""
+    if not 0 <= index < len(steps):
+        low = base / 10
+        high = (base + max(itertools.accumulate(steps))) / 10
+        raise ValueError(
+            f"index {index} not in 0 .. {len(steps) - 1} ({low:.1f} .. {high:.1f} dB, in the uneven steps of "
+            f"librtlsdr's tuner_r82xx.c)"
+        )
+    return (base + sum(steps[: index + 1])) / 10
 
 
 def iq_from_bytes(raw: np.ndarray) -> np.ndarray:
@@ -455,54 +479,33 @@ class SignalAnalyzer(multiprocessing.Process):
             offset,
         )
 
+    def _r82xx_get_stage_gain(self, name: str, steps: List[int], base: int = 0) -> float:
+        index = getattr(self, name)
+        try:
+            return r82xx_stage_gain_db(steps, index, base)
+        except ValueError as err:
+            raise ValueError(f"{name} {err}") from None
+
     def _r82xx_get_lna_gain(self) -> float:
-        r82xx_lna_gain_steps = [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13]
-        if self.lna_gain < 0 or self.lna_gain >= len(r82xx_lna_gain_steps):
-            raise ValueError(
-                "lna_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_lna_gain_steps[]" % self.lna_gain
-            )
-
-        total_gain = 0
-        for i in range(self.lna_gain + 1):
-            total_gain += r82xx_lna_gain_steps[i]
-
-        return total_gain / 10
+        """Gain (dB) of the LNA index."""
+        return self._r82xx_get_stage_gain("lna_gain", R82XX_LNA_GAIN_STEPS)
 
     def _r82xx_get_mixer_gain(self) -> float:
-        r82xx_mixer_gain_steps = [0, 5, 10, 10, 19, 9, 10, 25, 17, 10, 8, 16, 13, 6, 3, -8]
-        if self.mixer_gain < 0 or self.mixer_gain >= len(r82xx_mixer_gain_steps):
-            raise ValueError(
-                "mixer_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_mixer_gain_steps[]" % self.mixer_gain
-            )
-
-        total_gain = 0
-        for i in range(self.mixer_gain + 1):
-            total_gain += r82xx_mixer_gain_steps[i]
-
-        return total_gain / 10
+        """Gain (dB) of the mixer index (index 15 has less gain than 14)."""
+        return self._r82xx_get_stage_gain("mixer_gain", R82XX_MIXER_GAIN_STEPS)
 
     def _r82xx_get_vga_gain(self) -> float:
-        r82xx_vga_gain_steps = [0, 26, 26, 30, 42, 35, 24, 13, 14, 32, 36, 34, 35, 37, 35, 36]
-        if self.vga_gain < 0 or self.vga_gain >= len(r82xx_vga_gain_steps):
-            raise ValueError(
-                "vga_gain index %s not in 0 .. 15: 0 == -12 dB; 15 == 40.5 dB; => 3.5 dB/step" % self.vga_gain
-            )
-
-        total_gain = 0
-        for i in range(self.vga_gain + 1):
-            total_gain += r82xx_vga_gain_steps[i]
-
-        return total_gain / 10
+        """Gain (dB) of the VGA index, without ``R82XX_VGA_BASE_GAIN``."""
+        return self._r82xx_get_stage_gain("vga_gain", R82XX_VGA_GAIN_STEPS, R82XX_VGA_BASE_GAIN) - R82XX_VGA_BASE_GAIN / 10
 
     def _r82xx_get_gain(self) -> float:
-        VGA_BASE_GAIN = -47
-
-        total_gain = VGA_BASE_GAIN / 10
-        total_gain += self._r82xx_get_lna_gain()
-        total_gain += self._r82xx_get_mixer_gain()
-        total_gain += self._r82xx_get_vga_gain()
-
-        return total_gain
+        """Total gain (dB) of LNA, mixer and VGA."""
+        return (
+            R82XX_VGA_BASE_GAIN / 10
+            + self._r82xx_get_lna_gain()
+            + self._r82xx_get_mixer_gain()
+            + self._r82xx_get_vga_gain()
+        )
 
     def _ring_push(self, data: np.ndarray) -> bool:
         assert self._ring_buffer is not None
@@ -750,44 +753,41 @@ class SignalAnalyzer(multiprocessing.Process):
             sdr.close()
             return
 
+        # an invalid index is a configuration error, it must not fall back to a gain nobody configured
+        stage_gains = (self._r82xx_get_lna_gain(), self._r82xx_get_mixer_gain(), self._r82xx_get_vga_gain())
         try:
-            if self.lna_gain not in range(0, 16):
-                raise ValueError(
-                    "lna_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_lna_gain_steps[]" % self.lna_gain
-                )
-            if self.mixer_gain not in range(0, 16):
-                raise ValueError(
-                    "mixer_gain index %s not in 0 .. 15: 0 == min; see tuner_r82xx.c table r82xx_mixer_gain_steps[]" % self.mixer_gain
-                )
-            if self.vga_gain not in range(0, 16):
-                raise ValueError(
-                    "vga_gain index %s not in 0 .. 15: 0 == -12 dB; 15 == 40.5 dB; => 3.5 dB/step" % self.vga_gain
-                )
             sdr.set_manual_gain_enabled(True)
             sdr.set_agc_mode(False)
 
             ret = rtlsdr.librtlsdr.rtlsdr_set_tuner_gain_ext(sdr.dev_p, self.lna_gain, self.mixer_gain, self.vga_gain)
-            if ret == 0:
-                self.gain = self._r82xx_get_gain()
-                self.set_gain_reference(self.gain)
-
-                logger.warning(
-                    "Gain set manually (lna_index=%s, mixer_index=%s, vga_index=%s, gain=%s, lna_gain: %s, mixer_gain: %s, vga_gain: %s, sdr.gain: %s)",
-                    self.lna_gain,
-                    self.mixer_gain,
-                    self.vga_gain,
-                    self.gain,
-                    self._r82xx_get_lna_gain(),
-                    self._r82xx_get_mixer_gain(),
-                    self._r82xx_get_vga_gain(),
-                    sdr.gain,
-                )
-            else:
-                raise RuntimeError("Failed setting gain using rtlsdr_set_tuner_gain_ext (%s)" % ret)
-        except (AttributeError, ValueError, RuntimeError) as err:
-            logger.warning("Error setting gain manually: %s", err)
-            sdr.gain = float(self.gain)
-            logger.warning("rtlsdr_set_tuner_gain_ext failed, set gain to %s", sdr.gain)
+            if ret != 0:
+                raise RuntimeError(f"rtlsdr_set_tuner_gain_ext returned {ret}")
+            self.gain = self._r82xx_get_gain()
+            self.set_gain_reference(self.gain)
+            logger.warning(
+                "SDR %s: gain set manually: LNA index %s (%.1f dB) + mixer index %s (%.1f dB) + VGA index %s (%.1f dB) "
+                "= %.1f dB (librtlsdr reports %.1f dB, LNA and mixer only)",
+                self.device,
+                self.lna_gain,
+                stage_gains[0],
+                self.mixer_gain,
+                stage_gains[1],
+                self.vga_gain,
+                stage_gains[2] + R82XX_VGA_BASE_GAIN / 10,
+                self.gain,
+                sdr.gain,
+            )
+        except (AttributeError, RuntimeError) as err:
+            # a librtlsdr without rtlsdr_set_tuner_gain_ext (e.g. the original), or a tuner other than R820T/R828D
+            sdr.gain = self.gain
+            logger.warning(
+                "SDR %s: the gain stages can not be set separately (%s), set the gain to %s dB instead. The total gain "
+                "is unknown, the VGA is left to librtlsdr: fixed at 16.3 dB by the original librtlsdr, regulated by "
+                "the RTL2832 AGC by the community and trackIT forks.",
+                self.device,
+                err,
+                self.gain,
+            )
 
         if self.fullscale_dbm is not None and self._dbm_base is None:
             logger.warning(

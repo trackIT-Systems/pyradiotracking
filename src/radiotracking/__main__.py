@@ -62,11 +62,32 @@ class Runner:
         default=None,
         type=int,
     )
-    sdr_options.add_argument("-g", "--gain", help="gain, supported levels 0.0 - 49.6", default="49.6", type=float)
+    sdr_options.add_argument(
+        "-g",
+        "--gain",
+        help=(
+            "gain (dB), only used if the gain stages can not be set separately (the original librtlsdr, tuners other "
+            "than R820T/R828D), otherwise lna-gain, mixer-gain and vga-gain apply"
+        ),
+        default="49.6",
+        type=float,
+    )
 
-    sdr_options.add_argument("--lna-gain", help="lna_gain index in 0 .. 15", default="15", type=int)
-    sdr_options.add_argument("--mixer-gain", help="mixer_gain index in 0 .. 15", default="14", type=int)
-    sdr_options.add_argument("--vga-gain", help="vga_gain index in 0 .. 15", default="15", type=int)
+    sdr_options.add_argument(
+        "--lna-gain", help="LNA gain index in 0 .. 15 (0 .. 33.5 dB, librtlsdr's measured steps)", default="15", type=int
+    )
+    sdr_options.add_argument(
+        "--mixer-gain",
+        help="mixer gain index in 0 .. 15 (0 .. 16.1 dB, the maximum is at 14: 15 has less)",
+        default="14",
+        type=int,
+    )
+    sdr_options.add_argument(
+        "--vga-gain",
+        help="VGA gain index in 0 .. 15 (-4.7 .. 40.8 dB, librtlsdr's measured steps; 15 saturates the ADC on noise)",
+        default="15",
+        type=int,
+    )
     sdr_options.add_argument(
         "--fullscale-dbm",
         help=(
@@ -425,6 +446,12 @@ class Runner:
         if duplicates:
             logger.critical(f"Devices {duplicates} are configured more than once in {self.args.device}.")
             exit(1)
+
+        # the gain indexes must exist, the analyzers would otherwise run with a gain nobody configured
+        for name in ("lna_gain", "mixer_gain", "vga_gain"):
+            if not 0 <= getattr(self.args, name) <= 15:
+                logger.critical(f"{name} {getattr(self.args, name)} is not an index in 0 .. 15.")
+                exit(1)
 
         # initialize calibration parameter if unset
         if len(self.args.calibration) == 0:

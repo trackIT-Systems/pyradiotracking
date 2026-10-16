@@ -118,6 +118,13 @@ class TestInit:
         r.check_analyzers()
         assert calls and calls[0][0][-1] == -10.0
 
+    @pytest.mark.parametrize("option", ["--lna-gain", "--mixer-gain", "--vga-gain"])
+    @pytest.mark.parametrize("value", ["-1", "16"])
+    def test_gain_index_must_exist(self, make_runner, option, value):
+        with pytest.raises(SystemExit) as exc:
+            make_runner(option, value)
+        assert exc.value.code == 1
+
     def test_calibration_must_match_devices(self, make_runner):
         with pytest.raises(SystemExit) as exc:
             make_runner("-d", "0", "1", "-c", "1.0")
