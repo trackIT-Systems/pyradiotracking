@@ -36,8 +36,13 @@ def cborify(encoder, o):
         encoder.encode(cbor.CBORTag(1337, o.total_seconds()))
 
 
-def uncborify(decoder, tag, shareable_index=None):
-    """Helper function to convert CBOR tags to their original datatype."""
+def uncborify(*args, **kwargs):
+    """Helper function to convert CBOR tags to their original datatype.
+
+    Used as ``tag_hook`` of cbor2, which calls it as ``hook(decoder, tag)`` up to version 5 and
+    as ``hook(tag, immutable)`` from version 6 on, so the tag is looked up in the arguments.
+    """
+    tag = next(arg for arg in args if isinstance(arg, cbor.CBORTag))
     if tag.tag == 1337:
         return datetime.timedelta(seconds=tag.value)
 

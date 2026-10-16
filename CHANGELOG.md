@@ -8,6 +8,10 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 
 ## [Unreleased]
 
+### Changed
+
+- Python 3.12, 3.13 and 3.14 are supported (was >= 3.11); the test suite runs on all three, with cbor2 5 and 6
+
 ### Added
 
 - Test suite (`pytest`) covering messages, matching, configuration, consumers, signal analysis and the runner; known defects are recorded as strict `xfail` tests
@@ -17,6 +21,8 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 ### Fixed
 
 - Analyzers that hang after opening the device before the first USB sample are restarted
+- `write_config(help=True)` (`etc/generate-example-config.py`) raised on Python 3.14 and lowercased the help texts on 3.13; configs are written without ConfigParser now, and read without `%` interpolation
+- Decoding CBOR messages with `uncborify` (`etc/mqtt-stream.py`) failed with cbor2 6, which calls tag hooks with different arguments
 - A consumer (CSV, MQTT, matcher) raising an exception no longer keeps the remaining consumers from receiving the message, the error is logged instead
 - A SIGTERM or SIGALRM while the SDR is still opening raised `AttributeError` in the analyzer process; it now stops cleanly without starting to stream
 - Matched signals are published after the matching timeout while idle and on shutdown, they were only published when a later signal arrived, so the last detections before a quiet period (or shutdown) were lost
@@ -26,6 +32,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 
 - Web dashboard (`--dashboard`, `--dashboard-host`, `--dashboard-port`, `--dashboard-signals` and the `[dashboard]` config section) and the configuration web UI (`python3 -m radiotracking.config`)
 - `radiotracking.present` module, and the `dash` and `matplotlib` dependencies
+- `ArgConfParser.immutable_args()`, which relied on a private argparse API that changed in Python 3.13 and was only used by the removed config web UI
 - `radiotracking.bearing` module (unused `Gottwald2019Bearings` bearing calculation from 2021)
 
   Config files that still contain a `[dashboard]` section keep working, the section is ignored.

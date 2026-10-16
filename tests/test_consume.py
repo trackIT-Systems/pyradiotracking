@@ -5,8 +5,6 @@ import json
 import logging
 import os
 import socket
-import sys
-from importlib.metadata import version
 from unittest import mock
 
 import cbor2
@@ -32,14 +30,6 @@ def matching(make_signal, devices=("0", "1")):
     return msig
 
 
-CBOR2_MAJOR = int(version("cbor2").split(".")[0])
-cbor2_hook = pytest.mark.xfail(
-    CBOR2_MAJOR >= 6,
-    strict=True,
-    reason="cbor2 6 calls tag hooks as hook(tag, immutable) instead of hook(decoder, tag); pyproject allows cbor2 >= 5.6.3 unbounded",
-)
-
-
 class TestSerialization:
     def test_jsonify(self):
         assert jsonify(T0) == T0.isoformat()
@@ -51,7 +41,6 @@ class TestSerialization:
         assert csvify(datetime.timedelta(seconds=1.5)) == 1.5
         assert csvify("x") == "x"
 
-    @cbor2_hook
     def test_cbor_roundtrip(self, make_signal):
         sig = make_signal()
         raw = cbor2.dumps(sig.as_list, default=cborify)
@@ -126,7 +115,6 @@ class TestMQTTConsumer:
         assert "station/radiotracking/matched/json" in topics
         assert "station/radiotracking/state/cbor" in topics
 
-    @cbor2_hook
     def test_payloads_decode(self, client, consumer, make_signal):
         consumer.add(make_signal())
         payloads = {c.args[0].rsplit("/", 1)[1]: c.args[1] for c in client.publish.call_args_list}

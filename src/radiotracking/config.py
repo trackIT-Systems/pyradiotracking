@@ -1,9 +1,8 @@
 import logging
-import sys
 from argparse import ArgumentParser, Namespace
 from ast import literal_eval
 from configparser import ConfigParser
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Text, TextIO, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Text, TextIO, Tuple
 
 
 # argparse names the group of optional arguments "optional arguments" before Python 3.10 and "options" since.
@@ -64,31 +63,6 @@ class ArgConfParser(ArgumentParser):
 
         return (namespace, unparsed)
 
-    def immutable_args(self, args: Optional[Sequence[Text]] = None) -> Iterable[str]:
-        """
-        Get a list of immutable arguments.
-
-        Parameters
-        ----------
-        args: typing.Optional[typing.Sequence[str]]
-            The list of arguments to parse, if unspecified, sys.argv is used.
-
-        Returns
-        -------
-        typing.Iterable[str]
-        """
-        if args is None:
-            # args default to the system args
-            args = sys.argv[1:]
-        else:
-            # make sure that args are mutable
-            args = list(args)
-
-        namespace = Namespace()
-        namespace, _ = super()._parse_known_args(arg_strings=args, namespace=namespace)
-
-        return namespace.__dict__.keys()
-
     def read_config(self, path: str) -> Dict[str, Any]:
         """
         Read a config file and update the namespace accordingly.
@@ -103,7 +77,8 @@ class ArgConfParser(ArgumentParser):
         typing.Dict[str, typing.Any]
             The configuration read from the file.
         """
-        config = ConfigParser()
+        # values are python literals, '%' must not be interpreted
+        config = ConfigParser(interpolation=None)
         config.read(path)
 
         conf_dict = {}
@@ -137,27 +112,25 @@ class ArgConfParser(ArgumentParser):
         help: bool
             Whether to write the help text.
         """
-        config = ConfigParser(allow_no_value=help)
+        # written by hand: ConfigParser lowercases or rejects the help texts when used as comment "keys"
+        sections = []
 
         for group in self._action_groups:
             # skip unnamed groups
             if not isinstance(group.title, str):
                 continue
 
-            # skip empty groups
-            if not group._group_actions:
-                continue
-
-            # create section for group title
-            config[group.title] = {}
-
-            # iterate actions and set config accordingly
+            # iterate actions and extract parameters from args
+            lines = []
             for action in group._group_actions:
-                # extract parameters from args and set in config
                 if action.dest in args.__dict__:
                     if help:
-                        config.set(group.title, f"# {action.help}")
-                    config[group.title][action.dest] = repr(args.__dict__[action.dest])
+                        lines.append(f"# {action.help}")
+                    lines.append(f"{action.dest} = {args.__dict__[action.dest]!r}")
 
-        config.write(file)
+            # skip empty groups
+            if lines:
+                sections.append("\n".join([f"[{group.title}]", *lines]))
+
+        file.write("\n\n".join(sections) + "\n\n")
 

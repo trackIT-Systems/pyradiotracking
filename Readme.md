@@ -5,7 +5,7 @@ Detect signals of wildlife tracking systems with RTL SDR devices.
 
 ### Installation
 
-radiotracking requires Python >= 3.11 and [librtlsdr](https://github.com/trackIT-Systems/librtlsdr) (via [pyrtlsdr](https://github.com/pyrtlsdr/pyrtlsdr)).
+radiotracking requires Python 3.12, 3.13 or 3.14 and [librtlsdr](https://github.com/trackIT-Systems/librtlsdr) (via [pyrtlsdr](https://github.com/pyrtlsdr/pyrtlsdr)).
 
 ```bash
 $ pip install .

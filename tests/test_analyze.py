@@ -390,3 +390,24 @@ class TestExtractSignals:
         freqs, times, spec = spectrogram(an, iq)
         assert len(times) == 1
         assert an.extract_signals(freqs, times, spec, T0) == []
+
+
+@pytest.mark.parametrize("method", [m for m in ("fork", "spawn", "forkserver") if m in multiprocessing.get_all_start_methods()])
+def test_analyzer_process_starts_with_every_start_method(method):
+    """Python 3.14 changed the default start method on Linux to forkserver, the process object has to be picklable."""
+    previous = multiprocessing.get_start_method(allow_none=True)
+    multiprocessing.set_start_method(method, force=True)
+    try:
+        # device 99 does not exist, the child exits with an error right after it was started
+        an = make_analyzer(
+            device="99",
+            signal_queue=multiprocessing.Queue(),
+            last_data_ts=multiprocessing.Value("d", 0.0),
+            streaming_ts=multiprocessing.Value("d", 0.0),
+        )
+        an.start()
+        an.join(timeout=60)
+        assert an.exitcode is not None
+        assert an.exitcode == 1
+    finally:
+        multiprocessing.set_start_method(previous, force=True)
