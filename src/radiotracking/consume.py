@@ -15,7 +15,7 @@ from typing import List, Type
 import cbor2 as cbor
 import paho.mqtt.client
 
-from radiotracking import AbstractMessage, MatchingSignal, Signal, StateMessage
+from radiotracking import AbstractMessage, MatchingSignal, Signal, SpectrumMessage, StateMessage
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,8 @@ def csvify(o):
     """Helper function to convert non-native types to CSV serializable values."""
     if isinstance(o, datetime.timedelta):
         return o.total_seconds()
+    if isinstance(o, (list, tuple)):
+        return ",".join(f"{v:.2f}" for v in o)
 
     return o
 
@@ -147,6 +149,12 @@ class MQTTConsumer(AbstractConsumer):
             path = f"{self.prefix}/matched"
         elif isinstance(signal, StateMessage):
             path = f"{self.prefix}/state"
+        elif isinstance(signal, SpectrumMessage):
+            # hundreds of values per message: only compact CBOR, the half precision floats take 3 bytes each
+            payload_cbor = cbor.dumps(signal.as_list, default=cborify, canonical=True)
+            self._publish(f"{self.prefix}/spectrum/cbor", payload_cbor)
+            logger.debug(f"published spectrum via mqtt, cbor: {len(payload_cbor)}")
+            return
         else:
             logger.critical(f"Unknown data type {type(signal)}, skipping.")
             return
@@ -292,6 +300,14 @@ class ProcessConnector:
                 open(f"{state_csv_path}.csv", "w"), cls=StateMessage, header=StateMessage.header
             )
             self.consumers.append(state_csv_consumer)
+
+            # create consumer for the noise and snr per frequency
+            spectrum_csv_path = f"{path}/{station}_{ts:%Y-%m-%dT%H%M%S}-spectrum"
+            spectrum_csv_path += "_calibration" if calibrate else ""
+            spectrum_csv_consumer = CSVConsumer(
+                open(f"{spectrum_csv_path}.csv", "w"), cls=SpectrumMessage, header=SpectrumMessage.header
+            )
+            self.consumers.append(spectrum_csv_consumer)
 
         # add mqtt consumer (only if not in calibration)
         if mqtt and not calibrate:

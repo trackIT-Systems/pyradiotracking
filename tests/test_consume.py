@@ -10,7 +10,7 @@ from unittest import mock
 import cbor2
 import pytest
 
-from radiotracking import MatchingSignal, Signal, StateMessage
+from radiotracking import MatchingSignal, Signal, SpectrumMessage, StateMessage
 from radiotracking.consume import (
     CSVConsumer,
     MQTTConsumer,
@@ -22,6 +22,19 @@ from radiotracking.consume import (
 )
 
 from .conftest import T0
+
+
+def spectrum(bins=256):
+    return SpectrumMessage(
+        "0",
+        T0,
+        datetime.timedelta(seconds=300),
+        150_005_000.0,
+        1171.875,
+        # multiples of 1/16 dB, exact in half precision
+        [-100.0 - (i % 7) * 0.125 for i in range(bins)],
+        [3.0 + (i % 5) * 0.1875 for i in range(bins)],
+    )
 
 
 def matching(make_signal, devices=("0", "1")):
@@ -49,9 +62,12 @@ class TestSerialization:
         assert decoded[3] == sig.duration
         assert decoded[2] == sig.frequency
 
-    def test_cbor_state_message_with_none_metrics(self):
+    def test_cbor_state_message_has_the_lifecycle_only(self):
         raw = cbor2.dumps(StateMessage("0", T0, StateMessage.State.RUNNING).as_list, default=cborify)
-        assert cbor2.loads(raw, tag_hook=uncborify)[3:] == [None, None, None]
+        assert cbor2.loads(raw, tag_hook=uncborify) == ["0", T0, 1]
+
+    def test_csvify_joins_lists(self):
+        assert csvify([-100.004, 3.5]) == "-100.00,3.50"
 
     def test_json_of_matching_signal_with_missing_device(self, make_signal):
         msig = matching(make_signal)
@@ -61,6 +77,15 @@ class TestSerialization:
 
 
 class TestCSVConsumer:
+    def test_spectrum_row_has_the_values_in_two_cells(self):
+        out = io.StringIO()
+        CSVConsumer(out, SpectrumMessage, header=SpectrumMessage.header).add(spectrum(bins=3))
+        header, row = list(csv.reader(io.StringIO(out.getvalue()), delimiter=";"))
+        assert header == SpectrumMessage.header
+        assert row[2:5] == ["300.0", "150005000.0", "1171.875"]
+        assert row[5] == "-100.00,-100.12,-100.25"
+        assert row[6] == "3.00,3.19,3.38"
+
     def test_writes_header_and_only_matching_class(self, make_signal):
         out = io.StringIO()
         consumer = CSVConsumer(out, Signal, header=Signal.header)
@@ -122,6 +147,17 @@ class TestMQTTConsumer:
         assert payloads["csv"].split(";")[0] == "0"
         assert cbor2.loads(payloads["cbor"], tag_hook=uncborify)[0] == "0"
 
+    def test_spectrum_is_published_as_compact_cbor_only(self, client, consumer):
+        consumer.add(spectrum())
+        assert self.topics(client) == ["station/radiotracking/spectrum/cbor"]
+        payload = client.publish.call_args.args[1]
+        # 512 half precision values of 3 bytes, plus the header fields
+        assert len(payload) < 2000
+        row = cbor2.loads(payload, tag_hook=uncborify)
+        assert row[:5] == ["0", T0, datetime.timedelta(seconds=300), 150_005_000.0, 1171.875]
+        assert row[5] == spectrum().noise
+        assert row[6] == spectrum().snr
+
     def test_unknown_type_is_skipped(self, client, consumer):
         consumer.add(object())  # type: ignore[arg-type]
         client.publish.assert_not_called()
@@ -164,13 +200,14 @@ class TestProcessConnector:
         conn = self.make(tmp_path, csv=True)
         outdir = tmp_path / socket.gethostname() / "radiotracking"
         names = sorted(p.name for p in outdir.iterdir())
-        assert len(names) == 3
+        assert len(names) == 4
         assert any(n.endswith("-matched.csv") for n in names)
         assert any(n.endswith("-state.csv") for n in names)
+        assert any(n.endswith("-spectrum.csv") for n in names)
 
         conn.q.put(make_signal())
         conn.step(datetime.timedelta(seconds=2))
-        signal_csv = next(p for p in outdir.iterdir() if not p.name.endswith(("-matched.csv", "-state.csv")))
+        signal_csv = next(p for p in outdir.iterdir() if not p.name.endswith(("-matched.csv", "-state.csv", "-spectrum.csv")))
         assert len(signal_csv.read_text().splitlines()) == 2
 
     def test_calibration_suffix(self, tmp_path):

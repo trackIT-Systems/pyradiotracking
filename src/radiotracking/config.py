@@ -20,6 +20,7 @@ REMOVED_OPTIONS: Dict[str, str] = {
     "schedule": "the schedule of operation was removed, radiotracking runs permanently",
     "dashboard": "the dashboard was removed",
     "mqtt_verbose": "log messages are no longer published via MQTT",
+    "status_interval": "it was renamed to spectrum_interval_s",
 }
 
 # Sections of removed features, their keys are ignored without a warning about unknown options.

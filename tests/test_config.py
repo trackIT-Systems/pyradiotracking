@@ -88,7 +88,7 @@ def test_write_config_with_help(tmp_path):
     buf = io.StringIO()
     parser.write_config(args, buf, help=True)
     assert "# center frequency to tune to (Hz)" in buf.getvalue()
-    assert "# interval for publishing aggregated spectrogram metrics in state messages (s); <=0 disables" in buf.getvalue()
+    assert "# interval for publishing the noise and SNR per frequency (s); <=0 disables" in buf.getvalue()
 
 
 def test_config_written_with_help_can_be_read_back(tmp_path):
@@ -178,6 +178,15 @@ class TestRemovedOptions:
         assert "mqtt_verbose" not in vars(args)
         assert ("Ignoring 'mqtt_verbose'" in caplog.text) is warns
         assert "unknown" not in caplog.text
+
+    @pytest.mark.parametrize("value,warns", [("0", False), ("60.0", True)])
+    def test_status_interval_of_old_configs(self, tmp_path, caplog, value, warns):
+        cfg = write(tmp_path, f"[rtl-sdr]\nstatus_interval = {value}\n")
+        with caplog.at_level(logging.WARNING):
+            args = parser.parse_args(["--config", cfg])
+        assert "status_interval" not in vars(args)
+        assert args.spectrum_interval_s == 300.0
+        assert ("renamed to spectrum_interval_s" in caplog.text) is warns
 
     def test_schedule_is_not_a_command_line_option(self, tmp_path):
         with pytest.raises(SystemExit):
@@ -270,3 +279,8 @@ class TestUnknownOptions:
         with caplog.at_level(logging.WARNING):
             parser.parse_args(["--config", str(path)])
         assert caplog.text == ""
+
+
+def test_spectrum_interval_is_read_from_the_config(tmp_path):
+    cfg = write(tmp_path, "[rtl-sdr]\nspectrum_interval_s = 600\n")
+    assert parser.parse_args(["--config", cfg]).spectrum_interval_s == 600.0

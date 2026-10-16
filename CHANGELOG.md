@@ -26,7 +26,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 - Test suite (`pytest`) covering messages, matching, configuration, consumers, signal analysis and the runner; known defects are recorded as strict `xfail` tests
 - GitHub Actions run the test suite on every push to `main`, with Python 3.12, 3.13 and 3.14 on the latest dependencies and with Python 3.13 on the minimum versions (those of Debian 13); the coverage report is shown in the summary of each run
 - Sample rate (`--sample-rate`) and tuner bandwidth (`--tuner-bandwidth`) are configurable, tuner bandwidth defaults to twice the sample rate
-- SDR spectrogram metrics are published in state messages (`--status-interval`)
+- Spectrum messages with the noise level and the SNR of every frequency bin of an SDR, every `--spectrum-interval-s` (default 300 s) of IQ samples (#3). The noise is the median of the per-frequency noise level the detection uses (not raised by tags), the SNR the strongest power in the interval over it; the first analysis block of a stream is left out, it starts with a broadband transient of 5-7 ms. They are published as compact CBOR only (`<station>/radiotracking/spectrum/cbor`, half precision values, ~1.6 kB for 256 bins) and written to `-spectrum.csv`. They replace the peak, RMS and SNR of the whole band that state messages carried on `main` since May 2026 (`--status-interval`): state messages report the lifecycle only again, a configured `status_interval` is ignored with a warning
 
 ### Fixed
 

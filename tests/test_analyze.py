@@ -46,7 +46,7 @@ def make_analyzer(**over):
         signal_queue=queue.Queue(),
         last_data_ts=multiprocessing.Value("d", 0.0),
         streaming_ts=multiprocessing.Value("d", 0.0),
-        status_interval=0,
+        spectrum_interval_s=0,
     )
     kw.update(over)
     return SignalAnalyzer(**kw)
@@ -242,13 +242,6 @@ class TestUpdateState:
         an.update_state(T0, StateMessage.State.STARTED)
         an.update_state(T0 + datetime.timedelta(seconds=1), StateMessage.State.RUNNING)
         assert [s.state for s in self.states(an)] == [StateMessage.State.STARTED, StateMessage.State.RUNNING]
-
-    def test_metrics_bypass_throttling(self, an):
-        an.update_state(T0, StateMessage.State.RUNNING)
-        an.update_state(T0, StateMessage.State.RUNNING, peak_db=-10.0, rms_db=-40.0, snr_db=30.0)
-        sent = self.states(an)
-        assert len(sent) == 2
-        assert sent[1].peak_db == -10.0
 
     def test_timestamps_are_timezone_aware(self, an):
         an.update_state(datetime.datetime(2026, 1, 1, 12), StateMessage.State.RUNNING)
@@ -784,6 +777,32 @@ class TestStreaming:
         # the bursts are not aligned to segments, the partially covered segments at both edges count for a strong one
         assert [s.duration.total_seconds() for s in sigs] == pytest.approx([0.02, 0.025], abs=2 * SEG_S)
 
+    def test_spectrum_is_published_by_the_consumer_loop(self, an):
+        import threading
+
+        from radiotracking import SpectrumMessage
+
+        an.spectrum_interval_s = 2 * an.analysis_block_samples / FS
+        consumer = threading.Thread(target=an._analysis_consumer_loop)
+        consumer.start()
+        iq = burst_iq(4 * an.analysis_block_samples, 0.0, 0.0)
+        for i in range(0, len(iq), 131072):
+            an._producer_enqueue(iq[i : i + 131072], None)
+        an._consumer_stop.set()
+        with an._ring_cv:
+            an._ring_cv.notify_all()
+        consumer.join(timeout=10)
+        msgs = []
+        while not an.signal_queue.empty():
+            msg = an.signal_queue.get_nowait()
+            if isinstance(msg, SpectrumMessage):
+                msgs.append(msg)
+        # the first block of the stream is left out (start transient), the fourth starts an incomplete interval
+        assert len(msgs) == 1
+        block = datetime.timedelta(seconds=an.analysis_block_samples / FS)
+        assert (msgs[0].ts - an._sample_clock_t0.astimezone()).total_seconds() == pytest.approx(block.total_seconds(), abs=US)
+        assert msgs[0].duration.total_seconds() == pytest.approx(2 * an.analysis_block_samples / FS, abs=US)
+
     def test_ring_overflow_stops_streaming(self, an):
         an._producer_enqueue(np.zeros(an._ring_capacity - 10, dtype=np.complex64), None)
         assert not an.sdr.cancelled
@@ -808,3 +827,100 @@ def test_analyzer_raises_a_too_short_timeout(caplog):
         an = make_analyzer(sdr_timeout_s=1, sdr_callback_length=300000)
     assert an.sdr_timeout_s == 2
     assert "sdr_timeout_s (1 s) is too short" in caplog.text
+
+
+class TestSpectrum:
+    BLOCK = 30208  # 0.1 s
+
+    def run(self, an, iq):
+        """Analyse consecutive blocks like the consumer loop does, return the spectrum messages."""
+        from radiotracking import SpectrumMessage
+        from radiotracking.analyze import noise_levels
+
+        for i in range(len(iq) // self.BLOCK):
+            freqs, times, spec = spectrogram(an, iq[i * self.BLOCK : (i + 1) * self.BLOCK])
+            noise = noise_levels(spec)
+            ts = T0 + datetime.timedelta(seconds=i * self.BLOCK / FS)
+            an.extract_signals(freqs, times, spec, ts, noise)
+            an._accumulate_spectrum(freqs, spec, noise, ts, self.BLOCK)
+            an._spectrogram_last = spec
+        out = []
+        while not an.signal_queue.empty():
+            msg = an.signal_queue.get_nowait()
+            if isinstance(msg, SpectrumMessage):
+                out.append(msg)
+        return out
+
+    def analyzer(self, **over):
+        # an interval of three blocks
+        return make_analyzer(spectrum_interval_s=3 * self.BLOCK / FS, **over)
+
+    def test_noise_levels_of_complex_noise(self):
+        from radiotracking.analyze import noise_levels
+
+        an = make_analyzer()
+        _, _, spec = spectrogram(an, burst_iq(90112, 0.0, 0.0))
+        assert dB(np.median(noise_levels(spec))) == pytest.approx(dB(2e-6 / FS), abs=0.5)
+
+    def test_precomputed_noise_gives_the_same_signals(self):
+        from radiotracking.analyze import noise_levels
+
+        an = make_analyzer()
+        freqs, times, spec = spectrogram(an, burst_iq(30208, 0.03, 0.02) + burst_iq(30208, 0.06, 0.02, tone_bin=-50, noise=0))
+        assert repr(an.extract_signals(freqs, times, spec, T0)) == repr(
+            an.extract_signals(freqs, times, spec, T0, noise_levels(spec))
+        )
+
+    def test_one_message_per_complete_interval(self):
+        an = self.analyzer()
+        assert self.run(an, burst_iq(2 * self.BLOCK, 0.0, 0.0)) == []
+        an = self.analyzer()
+        msgs = self.run(an, burst_iq(7 * self.BLOCK, 0.0, 0.0))
+        # the seventh block starts an interval that is not complete
+        assert len(msgs) == 2
+        assert [m.ts for m in msgs] == [T0, T0 + datetime.timedelta(seconds=3 * self.BLOCK / FS)]
+        assert all(m.ts.tzinfo is not None for m in msgs)
+        assert all(m.duration.total_seconds() == pytest.approx(3 * self.BLOCK / FS, abs=US) for m in msgs)
+
+    def test_bins_ascend_over_the_band(self):
+        (msg,) = self.run(self.analyzer(), burst_iq(3 * self.BLOCK, 0.0, 0.0))
+        assert len(msg.noise) == len(msg.snr) == NPERSEG
+        assert msg.bin_width == BIN_HZ
+        assert msg.frequency == pytest.approx(CENTER - FS / 2)
+        assert msg.frequencies[NPERSEG // 2] == pytest.approx(CENTER)
+
+    @pytest.mark.parametrize("tone_bin", [TONE_BIN, -30])
+    def test_a_burst_is_the_snr_maximum_in_its_bin(self, tone_bin):
+        iq = burst_iq(3 * self.BLOCK, 0.13, 0.02, tone_bin=tone_bin, amp=4e-3)
+        an = self.analyzer(signal_threshold_dbw=-120)
+        (msg,) = self.run(an, iq)
+        peak = int(np.argmax(msg.snr))
+        assert msg.frequencies[peak] == pytest.approx(CENTER + tone_bin * BIN_HZ)
+
+        # the burst's SNR as reported by its signal, the peak of a constant tone equals its average
+        (sig,) = detect(make_analyzer(signal_threshold_dbw=-120), iq[self.BLOCK : 2 * self.BLOCK])[0]
+        assert msg.snr[peak] == pytest.approx(sig.snr, abs=1.5)
+        # noise only: the maximum of ~350 exponentially distributed powers is ~8 dB above their mean
+        quiet = [snr for i, snr in enumerate(msg.snr) if abs(i - peak) > 2]
+        assert max(quiet) < 15
+
+    def test_noise_is_not_raised_by_a_burst(self):
+        # the median over the blocks of an interval: with only a few blocks, a burst in one of them moves it to a
+        # neighbouring block's estimate, a 300 s interval has ~1000 blocks
+        def interval():
+            return make_analyzer(spectrum_interval_s=9 * self.BLOCK / FS)
+
+        quiet = self.run(interval(), burst_iq(9 * self.BLOCK, 0.0, 0.0))[0]
+        loud = self.run(interval(), burst_iq(9 * self.BLOCK, 0.43, 0.02, amp=1.0))[0]
+        assert np.array(loud.noise) == pytest.approx(np.array(quiet.noise), abs=0.5)
+        assert max(loud.snr) > 70
+
+    def test_calibration_shifts_the_noise_but_not_the_snr(self):
+        iq = burst_iq(3 * self.BLOCK, 0.13, 0.02)
+        plain = self.run(self.analyzer(), iq)[0]
+        calibrated = self.run(self.analyzer(calibration_db=6.0), iq)[0]
+        assert np.array(plain.noise) - np.array(calibrated.noise) == pytest.approx(6.0)
+        assert calibrated.snr == pytest.approx(plain.snr)
+
+    def test_disabled(self):
+        assert self.run(make_analyzer(spectrum_interval_s=0), burst_iq(6 * self.BLOCK, 0.0, 0.0)) == []

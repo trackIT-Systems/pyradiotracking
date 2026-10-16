@@ -36,8 +36,8 @@ radiotracking --config etc/radiotracking.ini
 
 Signals are published to:
 
-- **CSV files** (`--csv`) in `<path>/<hostname>/radiotracking/`: `<station>_<start time>.csv` for signals, plus `-matched.csv` and `-state.csv`.
-- **MQTT** (`--mqtt`), as JSON, CSV and CBOR: `<station>/radiotracking/device/<device>/…` for the signals of each SDR, `…/matched/…` for matched signals and `…/state/…` for SDR states and spectrum statistics.
+- **CSV files** (`--csv`) in `<path>/<hostname>/radiotracking/`: `<station>_<start time>.csv` for signals, plus `-matched.csv`, `-state.csv` and `-spectrum.csv`.
+- **MQTT** (`--mqtt`), as JSON, CSV and CBOR: `<station>/radiotracking/device/<device>/…` for the signals of each SDR, `…/matched/…` for matched signals and `…/state/…` for SDR states. `…/spectrum/cbor` carries the noise level and SNR of every frequency bin of each SDR every `spectrum_interval_s` (300 s), as compact CBOR only.
 - **stdout** (`--sig-stdout`, `--match-stdout`), as CSV.
 
 ## Development

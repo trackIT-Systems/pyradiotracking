@@ -91,10 +91,10 @@ class Runner:
         "--state-update-s", help="interval in which state update messages should be recorded (s)", default=300, type=int
     )
     sdr_options.add_argument(
-        "--status-interval",
-        default=60.0,
+        "--spectrum-interval-s",
+        default=300.0,
         type=float,
-        help="interval for publishing aggregated spectrogram metrics in state messages (s); <=0 disables",
+        help="interval for publishing the noise and SNR per frequency (s); <=0 disables",
     )
 
     # analysis options

@@ -13,13 +13,29 @@ import numpy as np
 import rtlsdr
 import scipy.signal
 
-from radiotracking import Signal, StateMessage, dB, from_dB
+from radiotracking import Signal, SpectrumMessage, StateMessage, dB, from_dB
 
 logger = logging.getLogger(__name__)
 
 
 LN2 = float(np.log(2))
-"""Median of an exponential distribution in units of its mean, see :meth:`SignalAnalyzer.extract_signals`."""
+"""Median of an exponential distribution in units of its mean, see :func:`noise_levels`."""
+
+
+def noise_levels(spectrogram: np.ndarray) -> np.ndarray:
+    """
+    Noise power of every frequency of a spectrogram.
+
+    The noise power is estimated by the median over time, which is not raised by a signal (a mean would be, by a
+    stronger signal and the longer it lasts). The power of a noise-only bin is exponentially distributed, i.e. its
+    median is ln(2) times its mean, which is divided out.
+
+    Parameters
+    ----------
+    spectrogram: np.ndarray
+        2d spectrogram data, frequencies by time.
+    """
+    return np.median(spectrogram, axis=1) / LN2
 
 DEFAULT_ANALYSIS_BLOCK_S = 0.3
 """Duration of IQ per analysis block if ``analysis_block_samples`` is not configured."""
@@ -194,8 +210,8 @@ class SignalAnalyzer(multiprocessing.Process):
         The multiprocessing value to put the last data timestamp in.
     streaming_ts: multiprocessing.Value
         Wall time when async USB streaming was entered; 0 until read_samples_async is about to start.
-    status_interval: float
-        Wall-clock interval (s) between aggregated spectrogram metrics in state messages; <= 0 disables.
+    spectrum_interval_s: float
+        Interval (s of IQ samples) between spectrum messages with the noise and SNR of every frequency; <= 0 disables.
     """
 
     def __init__(
@@ -224,7 +240,7 @@ class SignalAnalyzer(multiprocessing.Process):
         signal_queue: multiprocessing.Queue,
         last_data_ts: Synchronized,
         streaming_ts: Synchronized,
-        status_interval: float = 60.0,
+        spectrum_interval_s: float = 300.0,
         **kwargs,
     ):
         super().__init__()
@@ -272,7 +288,7 @@ class SignalAnalyzer(multiprocessing.Process):
         self.sdr_max_restart = sdr_max_restart
         self.sdr_timeout_s = resolve_sdr_timeout(sdr_timeout_s, sdr_callback_length, sample_rate, device)
         self.state_update_s = state_update_s
-        self.status_interval = status_interval
+        self.spectrum_interval_s = spectrum_interval_s
 
         self.signal_queue = signal_queue
         self.last_data_ts = last_data_ts
@@ -298,9 +314,10 @@ class SignalAnalyzer(multiprocessing.Process):
         self._sample_clock_t0: datetime.datetime | None = None
         self._samples_consumed: int = 0
 
-        self._status_peaks: list[float] = []
-        self._status_rms: list[float] = []
-        self._last_status_ts: datetime.datetime | None = None
+        self._spectrum_noise: list[np.ndarray] = []
+        self._spectrum_peak: Optional[np.ndarray] = None
+        self._spectrum_ts: datetime.datetime | None = None
+        self._spectrum_samples: int = 0
 
     def _finalize_analysis_block_samples(self) -> int:
         return resolve_block_samples(self.sample_rate, self.fft_nperseg, self._analysis_block_samples_configured)
@@ -454,30 +471,14 @@ class SignalAnalyzer(multiprocessing.Process):
             )
             bench_spectrogram = time.time()
 
-            signals = self.extract_signals(freqs, times, spectrogram, ts_start)
+            noise = noise_levels(spectrogram)
+            signals = self.extract_signals(freqs, times, spectrogram, ts_start, noise)
             bench_extract = time.time()
 
-            if self.status_interval > 0:
-                now_status = datetime.datetime.now().astimezone()
-                self._status_peaks.append(float(np.max(spectrogram)))
-                self._status_rms.append(float(np.mean(spectrogram)))
-                if self._last_status_ts is None:
-                    self._last_status_ts = now_status
-                elif (now_status - self._last_status_ts).total_seconds() >= self.status_interval:
-                    peak_db = dB(max(self._status_peaks)) - self.calibration_db
-                    rms_db = dB(float(np.mean(self._status_rms))) - self.calibration_db
-                    snr_db = peak_db - rms_db
-                    lifecycle = self.last_state.state if self.last_state else StateMessage.State.RUNNING
-                    self.update_state(
-                        now_status,
-                        lifecycle,
-                        peak_db=peak_db,
-                        rms_db=rms_db,
-                        snr_db=snr_db,
-                    )
-                    self._status_peaks.clear()
-                    self._status_rms.clear()
-                    self._last_status_ts = now_status
+            # the first milliseconds of a stream are a broadband transient (~18 dB over the noise for 5-7 ms on R820T
+            # sticks), too short for a signal, but it would raise the peak of every frequency of the first interval
+            if self._samples_consumed > len(chunk):
+                self._accumulate_spectrum(freqs, spectrogram, noise, ts_start, len(chunk))
 
             filtered = self.filter_shadow_signals(signals)
             bench_filter = time.time()
@@ -606,9 +607,10 @@ class SignalAnalyzer(multiprocessing.Process):
         self._consumer_stop = threading.Event()
         self._sample_clock_t0 = None
         self._samples_consumed = 0
-        self._status_peaks = []
-        self._status_rms = []
-        self._last_status_ts = None
+        self._spectrum_noise = []
+        self._spectrum_peak = None
+        self._spectrum_ts = None
+        self._spectrum_samples = 0
 
         self._consumer_thread = threading.Thread(target=self._analysis_consumer_loop, name=f"SDR{self.device}-analyze")
         self._consumer_thread.start()
@@ -678,14 +680,9 @@ class SignalAnalyzer(multiprocessing.Process):
         self,
         ts: datetime.datetime,
         state: StateMessage.State,
-        *,
-        peak_db: float | None = None,
-        rms_db: float | None = None,
-        snr_db: float | None = None,
     ):
-        has_metrics = peak_db is not None
-        # skip update if there is a state (unless publishing spectrogram metrics)
-        if self.last_state and not has_metrics:
+        # skip update if there is a state
+        if self.last_state:
             # the state is different
             if self.last_state.state == state:
                 # the state's timeout isn't over
@@ -696,11 +693,65 @@ class SignalAnalyzer(multiprocessing.Process):
             self.device,
             ts.astimezone(),
             state,
-            peak_db=peak_db,
-            rms_db=rms_db,
-            snr_db=snr_db,
         )
         self.signal_queue.put(self.last_state)
+
+    def _accumulate_spectrum(
+        self, freqs: np.ndarray, spectrogram: np.ndarray, noise: np.ndarray, ts_start: datetime.datetime, n_samples: int
+    ):
+        """
+        Collect the noise and peak power of every frequency of a block, publish a spectrum message per interval.
+
+        The interval is counted in IQ samples, i.e. on the same clock as the signal timestamps. The noise of the interval
+        is the median of the noise levels of its blocks, the SNR the ratio of the strongest power to that noise.
+
+        Parameters
+        ----------
+        freqs: np.ndarray
+            spectrogram frequency offsets (scipy order: 0, positive, negative)
+        spectrogram: np.ndarray
+            2d spectrogram data of the block
+        noise: np.ndarray
+            noise power of every frequency of the block, see :func:`noise_levels`
+        ts_start: datetime.datetime
+            start of the block
+        n_samples: int
+            IQ samples of the block
+        """
+        if self.spectrum_interval_s <= 0:
+            return
+
+        peak = np.max(spectrogram, axis=1)
+        if self._spectrum_ts is None:
+            self._spectrum_ts = ts_start
+            self._spectrum_peak = peak
+        else:
+            self._spectrum_peak = np.maximum(self._spectrum_peak, peak)
+        self._spectrum_noise.append(noise.astype(np.float32))
+        self._spectrum_samples += n_samples
+
+        if self._spectrum_samples < self.spectrum_interval_s * self.sample_rate:
+            return
+
+        interval_noise = np.median(np.array(self._spectrum_noise), axis=0)
+        snr = self._spectrum_peak / interval_noise
+        order = np.argsort(freqs)
+        self.signal_queue.put(
+            SpectrumMessage(
+                self.device,
+                self._spectrum_ts.astimezone(),
+                datetime.timedelta(seconds=self._spectrum_samples / self.sample_rate),
+                self.center_freq + float(freqs[order[0]]),
+                self.sample_rate / self.fft_nperseg,
+                dB(interval_noise[order]) - self.calibration_db,
+                dB(snr[order]),
+            )
+        )
+
+        self._spectrum_noise = []
+        self._spectrum_peak = None
+        self._spectrum_ts = None
+        self._spectrum_samples = 0
 
     def consume_signal(self, signal: Signal):
         """
@@ -763,7 +814,12 @@ class SignalAnalyzer(multiprocessing.Process):
         return [sig for sig, shadow in zip(signals, signals_status) if shadow is None]
 
     def extract_signals(
-        self, freqs: np.ndarray, times: np.ndarray, spectrogram: np.ndarray, ts_start: datetime.datetime
+        self,
+        freqs: np.ndarray,
+        times: np.ndarray,
+        spectrogram: np.ndarray,
+        ts_start: datetime.datetime,
+        noise: Optional[np.ndarray] = None,
     ) -> List[Signal]:
         """Extract plateaus from spectogram data.
 
@@ -777,6 +833,8 @@ class SignalAnalyzer(multiprocessing.Process):
             2d spectrogram data
         ts_start:
             spectogram start time
+        noise: np.ndarray | None
+            noise power of every frequency, see :func:`noise_levels`; computed if None
 
         Returns
         -------
@@ -788,6 +846,9 @@ class SignalAnalyzer(multiprocessing.Process):
         if len(times) == 0:
             return signals
 
+        if noise is None:
+            noise = noise_levels(spectrogram)
+
         # duration of one spectrogram segment (no overlap), known from the configuration, a block may hold a single one
         segment_duration = self.fft_nperseg / self.sample_rate
         signal_min_duration_num = self.signal_min_duration / segment_duration
@@ -798,8 +859,8 @@ class SignalAnalyzer(multiprocessing.Process):
 
         # iterate over all frequencies
         for fi, fft in enumerate(spectrogram):
-            # set freq_avg (noise power of this frequency) to None to allow lazy evaluation
-            freq_avg = None
+            # noise power of this frequency
+            freq_avg = noise[fi]
             freq = freqs[fi] + self.center_freq
             ti_skip = start_min
 
@@ -817,12 +878,6 @@ class SignalAnalyzer(multiprocessing.Process):
                 # check if power of signal over threshold
                 if power_at(ti) < self.signal_threshold:
                     continue
-
-                # The noise power is estimated by the median over time, which is not raised by the signal itself
-                # (a mean would be, by a stronger signal and the longer it lasts). The power of a noise-only bin is
-                # exponentially distributed, i.e. its median is ln(2) times its mean, which is divided out.
-                if freq_avg is None:
-                    freq_avg = np.median(fft) / LN2
 
                 # check if snr of sample is below threshold
                 if power_at(ti) / freq_avg < self.snr_threshold:

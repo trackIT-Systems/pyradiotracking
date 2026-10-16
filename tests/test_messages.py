@@ -3,7 +3,7 @@ import datetime
 import numpy as np
 import pytest
 
-from radiotracking import MatchedSignal, MatchingSignal, Signal, StateMessage, dB, from_dB
+from radiotracking import MatchedSignal, MatchingSignal, Signal, SpectrumMessage, StateMessage, dB, from_dB
 
 from .conftest import T0
 
@@ -51,9 +51,56 @@ class TestStateMessage:
             StateMessage("0", T0, 7)
 
     def test_as_list_uses_state_value(self):
-        msg = StateMessage("0", T0, StateMessage.State.STARTED, peak_db=-10.0)
-        assert msg.as_list == ["0", T0, 2, -10.0, None, None]
+        msg = StateMessage("0", T0, StateMessage.State.STARTED)
+        assert msg.as_list == ["0", T0, 2]
         assert list(msg.as_dict) == StateMessage.header
+
+
+class TestSpectrumMessage:
+    def make(self, **over):
+        kw = dict(
+            device="0",
+            ts=T0,
+            duration=datetime.timedelta(seconds=300),
+            frequency=150_005_000.0,
+            bin_width=1171.875,
+            noise=[-100.0, -99.5, -101.25],
+            snr=[3.0, 40.0, 2.5],
+        )
+        kw.update(over)
+        return SpectrumMessage(**kw)
+
+    def test_parses_strings(self):
+        msg = self.make(ts=T0.isoformat(), duration="300.0", frequency="150005000", bin_width="1171.875", noise=["-100"], snr=["3"])
+        assert msg.ts == T0
+        assert msg.duration == datetime.timedelta(seconds=300)
+        assert msg.frequency == 150_005_000.0
+        assert msg.noise == [-100.0]
+        assert msg.snr == [3.0]
+
+    def test_as_dict_follows_header(self):
+        msg = self.make()
+        assert list(msg.as_dict) == SpectrumMessage.header
+        assert msg.as_dict["Noise (dBW)"] == [-100.0, -99.5, -101.25]
+        assert msg.as_list[:5] == ["0", T0, datetime.timedelta(seconds=300), 150_005_000.0, 1171.875]
+
+    def test_frequencies_ascend_by_the_bin_width(self):
+        assert self.make().frequencies == [150_005_000.0, 150_006_171.875, 150_007_343.75]
+
+    def test_values_are_published_in_half_precision(self):
+        # float16 resolves 1/16 dB at -100 dBW and 1/32 dB at 40 dB
+        msg = self.make(noise=[-100.43], snr=[40.123])
+        noise, snr = msg.as_list[5:]
+        assert noise[0] == pytest.approx(-100.43, abs=1 / 32)
+        assert snr[0] == pytest.approx(40.123, abs=1 / 64)
+        assert noise[0] == float(np.float16(noise[0]))
+
+    def test_noise_and_snr_need_the_same_bins(self):
+        with pytest.raises(ValueError):
+            self.make(snr=[1.0])
+
+    def test_repr(self):
+        assert "3 bins" in repr(self.make())
 
 
 class TestMatchedSignal:

@@ -3,7 +3,7 @@ import logging
 import statistics
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -72,9 +72,6 @@ class StateMessage(AbstractMessage):
         device: str,
         ts: datetime.datetime,
         state: Union["StateMessage.State", int, str],
-        peak_db: Optional[float] = None,
-        rms_db: Optional[float] = None,
-        snr_db: Optional[float] = None,
     ):
         super().__init__()
 
@@ -86,11 +83,7 @@ class StateMessage(AbstractMessage):
         else:
             self.state = StateMessage.State(int(state))
 
-        self.peak_db: Optional[float] = peak_db
-        self.rms_db: Optional[float] = rms_db
-        self.snr_db: Optional[float] = snr_db
-
-    header: List[str] = ["Device", "Time", "State", "Peak (dBW)", "RMS (dBW)", "SNR (dB)"]
+    header: List[str] = ["Device", "Time", "State"]
 
     @property
     def as_list(self) -> List:
@@ -98,15 +91,86 @@ class StateMessage(AbstractMessage):
             self.device,
             self.ts,
             self.state.value,
-            self.peak_db,
-            self.rms_db,
-            self.snr_db,
+        ]
+
+    def __repr__(self) -> str:
+        return f"StateMessage({self.device}, {self.ts}, {self.state})"
+
+
+class SpectrumMessage(AbstractMessage):
+    """
+    Noise and SNR of every frequency bin of a device over an interval, independent of detected signals.
+
+    Parameters
+    ----------
+    device: str
+        The device the spectrum was measured on.
+    ts: typing.Union[datetime.datetime, str]
+        The start of the interval.
+    duration: typing.Union[datetime.timedelta, float, str]
+        The duration of IQ samples the interval covers.
+    frequency: typing.Union[float, str]
+        The frequency of the lowest bin (Hz).
+    bin_width: typing.Union[float, str]
+        The width of a bin (Hz), the bins are in ascending frequency.
+    noise: typing.Sequence[typing.Union[float, str]]
+        The noise level of every bin (dBW).
+    snr: typing.Sequence[typing.Union[float, str]]
+        The ratio of the strongest power in every bin to its noise level (dB).
+    """
+
+    def __init__(
+        self,
+        device: str,
+        ts: Union[datetime.datetime, str],
+        duration: Union[datetime.timedelta, float, str],
+        frequency: Union[float, str],
+        bin_width: Union[float, str],
+        noise: Sequence[Union[float, str]],
+        snr: Sequence[Union[float, str]],
+    ):
+        super().__init__()
+
+        self.device = device
+        if isinstance(ts, datetime.datetime):
+            self.ts = ts
+        else:
+            self.ts = datetime.datetime.fromisoformat(ts)
+        if isinstance(duration, datetime.timedelta):
+            self.duration = duration
+        else:
+            self.duration = datetime.timedelta(seconds=float(duration))
+        self.frequency = float(frequency)
+        self.bin_width = float(bin_width)
+        self.noise: List[float] = [float(n) for n in noise]
+        self.snr: List[float] = [float(n) for n in snr]
+        if len(self.noise) != len(self.snr):
+            raise ValueError(f"noise ({len(self.noise)}) and snr ({len(self.snr)}) must have one value per bin")
+
+    header: List[str] = ["Device", "Time", "Duration", "Frequency (Hz)", "Bin Width (Hz)", "Noise (dBW)", "SNR (dB)"]
+
+    @property
+    def frequencies(self) -> List[float]:
+        """The frequency of every bin (Hz)."""
+        return [self.frequency + i * self.bin_width for i in range(len(self.noise))]
+
+    @property
+    def as_list(self) -> List:
+        # half precision resolves 1/16 dB at -100 dBW, and halves the size of the values in CBOR
+        return [
+            self.device,
+            self.ts,
+            self.duration,
+            self.frequency,
+            self.bin_width,
+            [float(np.float16(n)) for n in self.noise],
+            [float(np.float16(n)) for n in self.snr],
         ]
 
     def __repr__(self) -> str:
         return (
-            f"StateMessage({self.device}, {self.ts}, {self.state}, "
-            f"peak_db={self.peak_db!r}, rms_db={self.rms_db!r}, snr_db={self.snr_db!r})"
+            f"SpectrumMessage({self.device}, {self.ts}, {self.duration}, {self.frequency}, {self.bin_width}, "
+            f"{len(self.noise)} bins)"
         )
 
 
