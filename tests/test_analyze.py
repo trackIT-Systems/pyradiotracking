@@ -402,7 +402,7 @@ class TestShadowFilter:
     def test_empty(self):
         assert make_analyzer().filter_shadow_signals([]) == []
 
-    @pytest.mark.xfail(strict=True, reason="the shadow filter ignores frequency and time alignment, see the wiki review")
+    @pytest.mark.xfail(strict=True, reason="the shadow filter ignores frequency and time alignment, see #6")
     def test_simultaneous_tags_on_distant_frequencies_are_both_detected(self):
         # two tags 85 kHz apart, the weak one starts 5 ms after the strong one; the probability of a pulse overlapping
         # some other tag's pulse grows with the number of tags in range (~4 % per tag at 20 ms pulses every second)

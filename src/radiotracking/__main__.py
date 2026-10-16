@@ -74,7 +74,12 @@ class Runner:
         type=int,
     )
     
-    sdr_options.add_argument("--sdr-max-restart", help="maximal restart count per SDR device", default=3, type=int)
+    sdr_options.add_argument(
+        "--sdr-max-restart",
+        help="maximal restart count per SDR device, radiotracking terminates if one SDR exceeds it",
+        default=3,
+        type=int,
+    )
     sdr_options.add_argument(
         "--sdr-timeout-s",
         help="Stall timeout (s) for SIGALRM/parent watchdog; also sizes the IQ ring to sample_rate*timeout samples "
@@ -322,7 +327,8 @@ class Runner:
             else:
                 logger.info(f"SDR {analyzer.device} process is dead.")
 
-            # check if SDR allows further restarts
+            # check if SDR allows further restarts; if not, the whole station terminates on purpose: the SDRs of a station
+            # cover different directions, and data with a direction missing can't be used for bearings
             if analyzer.sdr_max_restart <= 0:
                 logger.critical(f"SDR {analyzer.device} is dead and beyond restart count, terminating.")
                 self.terminate(signal.SIGTERM)

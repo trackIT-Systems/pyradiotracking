@@ -67,6 +67,6 @@ echo 0 | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb
 
 **Long signals are not detected**: a signal must end in the block it is analysed in and start at most one block earlier, and it raises the noise level of its block. radiotracking warns at startup if the analysis block is shorter than 6 times `signal_max_duration_ms`; increase `analysis_block_samples` in that case.
 
-**An SDR keeps restarting**: it is restarted if no samples arrive for `sdr_timeout_s`, or if the analysis cannot keep up and the ring buffer overflows. After `sdr_max_restart` restarts, radiotracking terminates. Check the USB connection and power supply, and the log for the reason.
+**An SDR keeps restarting**: it is restarted if no samples arrive for `sdr_timeout_s`, or if the analysis cannot keep up and the ring buffer overflows. After `sdr_max_restart` restarts, radiotracking terminates, including the SDRs that still work. This is intended: a station with directional antennas needs the signals of all directions, data with a missing direction can't be used for bearings, so the station restarts as a whole (by systemd on tsOS-vhf) instead of continuing incomplete. Check the USB connection and power supply, and the log for the reason.
 
 **The sample rate is adjusted**: RTL-SDRs support [225–300 kHz and 900 kHz–3.2 MHz](https://github.com/osmocom/rtl-sdr/blob/0847e93e0869feab50fd27c7afeb85d78ca04631/src/librtlsdr.c#L1103-L1108). The rate actually set by the device is used for the analysis.
