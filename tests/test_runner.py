@@ -56,9 +56,16 @@ class FakeAnalyzer:
         return self.alive
 
     def terminate(self):
+        # like SignalAnalyzer.handle_signal, the analyzer reports its STOPPED state itself
         self.terminated = True
         self.alive = False
         self.exitcode = -signal.SIGTERM
+        try:
+            self.signal_queue.put_nowait(
+                StateMessage(self.device, datetime.datetime.now().astimezone(), StateMessage.State.STOPPED)
+            )
+        except queue.Full:
+            pass
 
     def kill(self):
         self.killed = True
@@ -170,7 +177,9 @@ class TestCheckAnalyzers:
         assert not a.terminated
 
     def test_stopped_state_has_the_time_of_the_last_data(self, runner):
+        # a stalled analyzer that doesn't react to SIGTERM (e.g. stuck in libusb) is killed, the runner reports it
         a = FakeAnalyzer(streaming_ts=self.now() - 60, last_data_ts=self.now() - 30)
+        a.terminate = lambda: None
         runner.analyzers = [a]
         runner.check_analyzers()
         stopped = a.signal_queue.get_nowait()
@@ -225,6 +234,8 @@ class TestCheckAnalyzers:
         runner.check_analyzers()
         assert runner.analyzers == runner.created
         assert runner.created[0].device == a.device
+        # it died without reporting its STOPPED state
+        assert a.signal_queue.get_nowait().state is StateMessage.State.STOPPED
 
     def test_restart_budget_is_exhausted(self, runner, monkeypatch):
         terminated = []
@@ -261,6 +272,15 @@ class TestStopAndTerminate:
         r.analyzers = [a]
         r.stop_analyzers()
         assert a.killed
+        # it could not report its STOPPED state, the runner does
+        assert a.signal_queue.get_nowait().state is StateMessage.State.STOPPED
+
+    def test_stopped_state_is_reported_once(self, make_runner):
+        r = make_runner()
+        a = FakeAnalyzer()
+        r.analyzers = [a]
+        r.stop_analyzers()
+        assert a.signal_queue.qsize() == 1
 
     def test_full_queue_does_not_block(self, make_runner):
         r = make_runner()

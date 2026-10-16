@@ -241,7 +241,15 @@ class Runner:
                 err,
             )
 
-    def _join_analyzer_or_kill(self, analyzer: SignalAnalyzer, join_timeout_s: float = 10.0) -> None:
+    def _join_analyzer_or_kill(self, analyzer: SignalAnalyzer, join_timeout_s: float = 10.0) -> bool:
+        """
+        Wait for an analyzer to exit after SIGTERM, kill it if it does not.
+
+        Returns
+        -------
+        bool
+            True if the analyzer had to be killed, i.e. it could not report its STOPPED state itself.
+        """
         # Avoid is_alive() in the shutdown path: on some Linux setups it can block on the
         # child's internal sync when another thread sent SIGKILL. Prefer join(timeout=0)
         # to reap, then exitcode / timed joins.
@@ -250,10 +258,10 @@ class Runner:
         except ValueError:
             pass
         if analyzer.exitcode is not None:
-            return
+            return False
         analyzer.join(timeout=join_timeout_s)
         if analyzer.exitcode is not None:
-            return
+            return False
         logger.warning(
             "SDR %s did not exit within %.1fs after SIGTERM; sending SIGKILL.",
             analyzer.device,
@@ -267,6 +275,12 @@ class Runner:
                 analyzer.device,
                 analyzer.pid,
             )
+        return True
+
+    def _stop_analyzer(self, analyzer: SignalAnalyzer) -> None:
+        """Stop an analyzer after SIGTERM was sent; it reports its STOPPED state itself, unless it had to be killed."""
+        if self._join_analyzer_or_kill(analyzer):
+            self._put_analyzer_stopped_state(analyzer)
 
     def stop_analyzers(self):
         """
@@ -275,11 +289,9 @@ class Runner:
         logger.info("Stopping all analyzers")
         analyzers = list(self.analyzers)
         for a in analyzers:
-            self._put_analyzer_stopped_state(a)
-        for a in analyzers:
             a.terminate()
         for a in analyzers:
-            self._join_analyzer_or_kill(a)
+            self._stop_analyzer(a)
         self.analyzers = []
 
     def check_analyzers(self):
@@ -322,12 +334,13 @@ class Runner:
                     )
 
                 # kill timed out analyzer
-                self._put_analyzer_stopped_state(analyzer)
                 analyzer.terminate()
-                self._join_analyzer_or_kill(analyzer)
+                self._stop_analyzer(analyzer)
 
             else:
+                # e.g. an exception in the analyzer, which did not report its STOPPED state
                 logger.info(f"SDR {analyzer.device} process is dead.")
+                self._put_analyzer_stopped_state(analyzer)
 
             # check if SDR allows further restarts; if not, the whole station terminates on purpose: the SDRs of a station
             # cover different directions, and data with a direction missing can't be used for bearings
