@@ -224,11 +224,27 @@ class TestProcessConnector:
         # main loop passes `next_check - now`, which can already be negative
         self.make(tmp_path).step(datetime.timedelta(seconds=-1))
 
-    @pytest.mark.xfail(strict=True, reason="a failing consumer aborts the step, so the remaining consumers never see the message")
-    def test_failing_consumer_does_not_starve_others(self, tmp_path, make_signal):
+    def test_failing_consumer_does_not_starve_others(self, tmp_path, make_signal, caplog):
+        conn = self.make(tmp_path)
+        seen = []
+        conn.consumers.extend(
+            [
+                mock.Mock(add=seen.append),
+                mock.Mock(add=mock.Mock(side_effect=RuntimeError("boom"))),
+                mock.Mock(add=seen.append),
+            ]
+        )
+        conn.q.put(make_signal())
+        with caplog.at_level(logging.ERROR):
+            assert conn.step(datetime.timedelta(seconds=2)) is True
+        assert len(seen) == 2
+        assert "failed to consume" in caplog.text and "boom" in caplog.text
+
+    def test_failing_consumer_does_not_break_following_steps(self, tmp_path, make_signal):
         conn = self.make(tmp_path)
         seen = []
         conn.consumers.extend([mock.Mock(add=mock.Mock(side_effect=RuntimeError("boom"))), mock.Mock(add=seen.append)])
-        conn.q.put(make_signal())
-        conn.step(datetime.timedelta(seconds=2))
-        assert len(seen) == 1
+        for _ in range(2):
+            conn.q.put(make_signal())
+            conn.step(datetime.timedelta(seconds=2))
+        assert len(seen) == 2

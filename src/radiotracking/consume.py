@@ -351,5 +351,10 @@ class ProcessConnector:
         except queue.Empty:
             return False
 
-        [c.add(sig) for c in self.consumers]
+        for c in self.consumers:
+            try:
+                c.add(sig)
+            except Exception:
+                # one failing consumer must not keep the others from seeing the message
+                logger.exception(f"{type(c).__name__} failed to consume {sig}")
         return True
