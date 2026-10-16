@@ -170,6 +170,15 @@ class TestRemovedOptions:
         assert "schedule" not in vars(args)
         assert "Ignoring 'schedule'" in caplog.text
 
+    @pytest.mark.parametrize("value,warns", [("0", False), ("1", True)])
+    def test_mqtt_verbose_of_old_configs(self, tmp_path, caplog, value, warns):
+        cfg = write(tmp_path, f"[publish]\nmqtt_verbose = {value}\n")
+        with caplog.at_level(logging.WARNING):
+            args = parser.parse_args(["--config", cfg])
+        assert "mqtt_verbose" not in vars(args)
+        assert ("Ignoring 'mqtt_verbose'" in caplog.text) is warns
+        assert "unknown" not in caplog.text
+
     def test_schedule_is_not_a_command_line_option(self, tmp_path):
         with pytest.raises(SystemExit):
             parser.parse_args(["--config", str(tmp_path / "none.ini"), "--schedule", "10:00-11:00"])

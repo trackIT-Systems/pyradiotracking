@@ -149,9 +149,6 @@ class Runner:
     publish_options.add_argument("--mqtt-port", help="port of mqtt broker", default=1883, type=int)
     publish_options.add_argument("--mqtt-qos", help="mqtt quality of service level (0, 1, 2)", default=1, type=int)
     publish_options.add_argument("--mqtt-keepalive", help="timeout for mqtt connection (s)", default=3600, type=int)
-    publish_options.add_argument(
-        "-mv", "--mqtt-verbose", help="increase mqtt logging verbosity", action="count", default=0
-    )
 
     def create_and_start(
         self, device: str, calibration_db: float, sdr_max_restart: int | None = None
@@ -350,8 +347,7 @@ class Runner:
         self._terminate_in_progress = True
         try:
             self.running = False
-            # Stop MQTT (and detach the log handler) before emitting shutdown logs so a
-            # stuck broker cannot block this path or recurse from logging back into MQTT.
+            # Stop MQTT first so a stuck broker cannot block this path.
             self.connector.shutdown()
 
             logger.warning(f"Caught {signal.Signals(sig).name}, terminating {len(self.analyzers)} analyzers.")

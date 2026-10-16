@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 REMOVED_OPTIONS: Dict[str, str] = {
     "schedule": "the schedule of operation was removed, radiotracking runs permanently",
     "dashboard": "the dashboard was removed",
+    "mqtt_verbose": "log messages are no longer published via MQTT",
 }
 
 # Sections of removed features, their keys are ignored without a warning about unknown options.

@@ -89,7 +89,7 @@ class TestMQTTConsumer:
 
     @pytest.fixture
     def consumer(self, client):
-        c = MQTTConsumer("localhost", 1883, 1, 60, 0, prefix="station/radiotracking")
+        c = MQTTConsumer("localhost", 1883, 1, 60, prefix="station/radiotracking")
         yield c
         c.shutdown()
 
@@ -137,11 +137,9 @@ class TestMQTTConsumer:
         consumer.add(make_signal())
         client.publish.assert_not_called()
 
-    def test_forwards_log_records_as_csv(self, client, consumer):
-        consumer.emit(logging.LogRecord("radiotracking.x", logging.WARNING, __file__, 1, "hello; world", None, None))
-        topic, payload = client.publish.call_args.args[:2]
-        assert topic == "station/radiotracking/log/csv"
-        assert next(csv.reader([payload], delimiter=";")) == ["WARNING", "radiotracking.x", "hello; world"]
+    def test_log_records_are_not_published(self, client, consumer):
+        logging.getLogger("radiotracking").warning("not for mqtt")
+        client.publish.assert_not_called()
 
 
 class TestProcessConnector:
@@ -182,18 +180,18 @@ class TestProcessConnector:
 
     def test_mqtt_is_skipped_in_calibration(self, tmp_path):
         with mock.patch("paho.mqtt.client.Client"):
-            conn = self.make(tmp_path, mqtt=True, calibrate=True, mqtt_host="h", mqtt_port=1, mqtt_qos=1, mqtt_keepalive=1, mqtt_verbose=0)
+            conn = self.make(tmp_path, mqtt=True, calibrate=True, mqtt_host="h", mqtt_port=1, mqtt_qos=1, mqtt_keepalive=1)
         assert conn.consumers == []
 
-    def test_mqtt_consumer_attaches_log_handler_and_shutdown_detaches(self, tmp_path):
-        with mock.patch("paho.mqtt.client.Client"):
-            conn = self.make(tmp_path, mqtt=True, mqtt_host="h", mqtt_port=1, mqtt_qos=1, mqtt_keepalive=1, mqtt_verbose=0)
-        handler = conn.consumers[0]
-        assert isinstance(handler, MQTTConsumer)
-        assert handler in logging.getLogger("radiotracking").handlers
+    def test_mqtt_consumer_is_no_log_handler_and_shutdown_stops_it(self, tmp_path):
+        with mock.patch("paho.mqtt.client.Client") as cls:
+            conn = self.make(tmp_path, mqtt=True, mqtt_host="h", mqtt_port=1, mqtt_qos=1, mqtt_keepalive=1)
+        consumer = conn.consumers[0]
+        assert isinstance(consumer, MQTTConsumer)
+        assert consumer not in logging.getLogger("radiotracking").handlers
         conn.shutdown()
         conn.shutdown()
-        assert handler not in logging.getLogger("radiotracking").handlers
+        cls.return_value.loop_stop.assert_called_once()
 
     def test_step_returns_on_timeout(self, tmp_path):
         assert self.make(tmp_path).step(datetime.timedelta(seconds=0.05)) is False

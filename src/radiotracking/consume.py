@@ -66,7 +66,7 @@ class AbstractConsumer(ABC):
         pass
 
 
-class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
+class MQTTConsumer(AbstractConsumer):
     """Class implementing a consumer that publishes data to an MQTT broker.
 
     Parameters
@@ -79,8 +79,6 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
         The quality of service to use.
     mqtt_keepalive: int
         The keepalive interval in seconds.
-    mqtt_verbose: int
-        The verbosity level for log messages to be forwarded.
     prefix: str
         The prefix to use for the MQTT topics.
     """
@@ -91,17 +89,9 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
         mqtt_port: int,
         mqtt_qos: int,
         mqtt_keepalive: int,
-        mqtt_verbose: int,
         prefix: str = "/radiotracking",
         **kwargs,
     ):
-        logging_level = max(0, logging.WARN - (mqtt_verbose * 10))
-        logging.StreamHandler.__init__(self)
-        super(logging.StreamHandler, self).__init__(level=logging_level)
-
-        fmt = logging.Formatter("%(message)s")
-        self.setFormatter(fmt)
-
         self.prefix = prefix
         self.mqtt_qos = mqtt_qos
         self._shutdown = False
@@ -145,21 +135,6 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
             info.wait_for_publish(timeout=self._publish_timeout_s)
         except Exception:
             return
-
-    def emit(self, record):
-        """Override the emit method to forward log messages to the MQTT broker."""
-        if self._shutdown:
-            return
-
-        path = f"{self.prefix}/log"
-
-        # publish csv
-        csv_io = StringIO()
-        csv.writer(csv_io, dialect="excel", delimiter=";").writerow(
-            [record.levelname, record.name, self.format(record)]
-        )
-        payload_csv = csv_io.getvalue().splitlines()[0]
-        self._publish(path + "/csv", payload_csv)
 
     def add(self, signal: AbstractMessage):
         """Add a signal to the consumer."""
@@ -322,20 +297,16 @@ class ProcessConnector:
         if mqtt and not calibrate:
             mqtt_consumer = MQTTConsumer(prefix=f"{station}/radiotracking", **kwargs)
             self.consumers.append(mqtt_consumer)
-            logging.getLogger("radiotracking").addHandler(mqtt_consumer)
 
         self._connector_shutdown = False
 
     def shutdown(self) -> None:
-        """Detach logging handlers and stop MQTT so shutdown cannot block on the broker."""
+        """Stop MQTT so shutdown cannot block on the broker."""
         if getattr(self, "_connector_shutdown", False):
             return
         self._connector_shutdown = True
-        rt_log = logging.getLogger("radiotracking")
         for c in self.consumers:
             if isinstance(c, MQTTConsumer):
-                if c in rt_log.handlers:
-                    rt_log.removeHandler(c)
                 c.shutdown()
 
     def step(self, timeout: datetime.timedelta) -> bool:

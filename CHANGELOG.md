@@ -49,6 +49,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 ### Removed
 
 - Schedule of operation (`--schedule`, `schedule` config option) and the `schedule` dependency; radiotracking always runs permanently. A `schedule` entry in an existing config file is ignored, a warning is logged if it is not empty
+- Publishing log messages via MQTT (`<station>/radiotracking/log/csv`) and `--mqtt-verbose`. Nothing subscribed to them, and with the `fork` start method the SDR processes inherited the handler without the MQTT network thread: their log messages were lost and blocked the process for the 2 s publish timeout each (e.g. 2 s longer startup and shutdown). A `mqtt_verbose` entry in an existing config file is ignored, a warning is logged if it is not 0
 - Web dashboard (`--dashboard`, `--dashboard-host`, `--dashboard-port`, `--dashboard-signals` and the `[dashboard]` config section) and the configuration web UI (`python3 -m radiotracking.config`)
 - `radiotracking.present` module, and the `dash` and `matplotlib` dependencies
 - `ArgConfParser.immutable_args()`, which relied on a private argparse API that changed in Python 3.13 and was only used by the removed config web UI

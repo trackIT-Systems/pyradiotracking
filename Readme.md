@@ -106,7 +106,6 @@ publish:
   --mqtt-qos MQTT_QOS   mqtt quality of service level (0, 1, 2) (default: 1)
   --mqtt-keepalive MQTT_KEEPALIVE
                         timeout for mqtt connection (s) (default: 3600)
-  -mv, --mqtt-verbose   increase mqtt logging verbosity (default: 0)
 ```
 
 ### Development
