@@ -84,8 +84,11 @@ class Runner:
     )
     sdr_options.add_argument(
         "--vga-gain",
-        help="VGA gain index in 0 .. 15 (-4.7 .. 40.8 dB, librtlsdr's measured steps; 15 saturates the ADC on noise)",
-        default="15",
+        help=(
+            "VGA gain index in 0 .. 15 (-4.7 .. 40.8 dB, librtlsdr's measured steps). The default 8 (16.3 dB) is the "
+            "fixed VGA gain of the original librtlsdr; 15 saturates the ADC on noise"
+        ),
+        default="8",
         type=int,
     )
     sdr_options.add_argument(

@@ -10,6 +10,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 
 ### Changed
 
+- `vga_gain` defaults to 8 (was 15): the VGA gain of 16.3 dB that the original librtlsdr set, 65.9 dB in total with the default LNA and mixer. 15 (90.4 dB) saturates the ADC on noise. Stations whose `radiotracking.ini` sets `vga_gain` are not affected
 - Gain indexes (`lna_gain`, `mixer_gain`, `vga_gain`) outside 0 .. 15 exit at startup with a message; they were reported by every analyzer and replaced by the `gain` option silently. If the gain stages can not be set separately (the original librtlsdr, tuners other than R820T/R828D) the analyzer logs that explicitly, with the VGA behaviour of the library, instead of "Error setting gain manually". `gain` is documented as this fallback only
 - The gain log line states LNA, mixer and VGA with their gain in dB and the total, and that librtlsdr's own value is LNA and mixer only. The help texts, the ini comments and the error messages give the measured ranges of librtlsdr's tables (VGA -4.7 .. 40.8 dB in uneven steps) instead of the datasheet's "-12 dB, 3.5 dB per step"
 - The default analysis block (`analysis_block_samples` unset) is 0.3 s of IQ (was 0.1 s). A warning is logged at startup if the block, default or configured, is shorter than 6 times `signal_max_duration_ms`

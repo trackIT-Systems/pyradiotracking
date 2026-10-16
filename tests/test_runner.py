@@ -84,6 +84,11 @@ class TestInit:
         assert r.analyzers == []
         assert r.args.calibration == [0.0]
 
+    def test_gain_defaults(self, make_runner):
+        # LNA 15 and mixer 14 are 49.6 dB, the VGA 8 is the fixed gain of the original librtlsdr: 65.9 dB in total
+        r = make_runner()
+        assert (r.args.lna_gain, r.args.mixer_gain, r.args.vga_gain) == (15, 14, 8)
+
     def test_calibration_defaults_to_zero_per_device(self, make_runner):
         assert make_runner("-d", "0", "1", "2").args.calibration == [0.0, 0.0, 0.0]
 
