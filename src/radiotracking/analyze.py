@@ -107,6 +107,10 @@ def spectrogram_window(window, nperseg: int, sample_rate: float) -> tuple[np.nda
 DEFAULT_ANALYSIS_BLOCK_S = 0.3
 """Duration of IQ per analysis block if ``analysis_block_samples`` is not configured."""
 
+SAMPLE_CLOCK_ANCHOR_S = 10.0
+"""Seconds of samples after which the sample clock is anchored to the wall clock again, see
+:meth:`SignalAnalyzer._anchor_sample_clock`."""
+
 RECOMMENDED_BLOCK_TO_MAX_DURATION = 6
 """The analysis block should be at least this many times as long as the longest accepted signal."""
 
@@ -382,6 +386,9 @@ class SignalAnalyzer(multiprocessing.Process):
         self._consumer_thread: Optional[threading.Thread] = None
         self._sample_clock_t0: datetime.datetime | None = None
         self._samples_consumed: int = 0
+        self._samples_received: int = 0
+        self._anchor_min: datetime.datetime | None = None
+        self._anchor_samples: int = 0
 
         self._spectrum_noise: list[np.ndarray] = []
         self._spectrum_peak: Optional[np.ndarray] = None
@@ -498,9 +505,7 @@ class SignalAnalyzer(multiprocessing.Process):
         assert self._consumer_stop is not None
         ring_overflow = False
         with self._ring_cv:
-            # the first sample of the stream was taken one buffer before the buffer was received
-            if self._sample_clock_t0 is None:
-                self._sample_clock_t0 = ts_recv - datetime.timedelta(seconds=len(buffer) / self.sample_rate)
+            self._anchor_sample_clock(ts_recv, len(buffer))
             if not self._ring_push(buffer):
                 logger.critical(
                     "SDR %s sample ring overflow (capacity %s samples ~%.3f s, occupied %s, "
@@ -523,6 +528,35 @@ class SignalAnalyzer(multiprocessing.Process):
             self.update_state(datetime.datetime.now(), StateMessage.State.STOPPED)
             self.sdr.cancel_read_async()
 
+    def _anchor_sample_clock(self, ts_recv: datetime.datetime, n_samples: int):
+        """
+        Anchor the sample clock (the wall time of the first sample of the stream) to the wall clock.
+
+        Signal timestamps are counted in samples from the first sample, which drifts against the wall clock with the
+        error of the SDR's crystal (~35 ms per day at 0.4 ppm, seconds at tens of ppm) and loses lost samples. Every
+        callback gives a candidate for the first sample's time: the time it was received minus all samples received.
+        The latency of the USB transfer only makes a candidate later, so the earliest of a window of
+        ``SAMPLE_CLOCK_ANCHOR_S`` becomes the new anchor; the first callback anchors the clock right away.
+
+        Parameters
+        ----------
+        ts_recv: datetime.datetime
+            wall time the callback was received
+        n_samples: int
+            samples of the callback
+        """
+        self._samples_received += n_samples
+        candidate = ts_recv - datetime.timedelta(seconds=self._samples_received / self.sample_rate)
+        if self._sample_clock_t0 is None:
+            self._sample_clock_t0 = candidate
+        if self._anchor_min is None or candidate < self._anchor_min:
+            self._anchor_min = candidate
+        self._anchor_samples += n_samples
+        if self._anchor_samples >= SAMPLE_CLOCK_ANCHOR_S * self.sample_rate:
+            self._sample_clock_t0 = self._anchor_min
+            self._anchor_min = None
+            self._anchor_samples = 0
+
     def _analysis_consumer_loop(self):
         assert self._ring_cv is not None
         assert self._consumer_stop is not None
@@ -533,12 +567,14 @@ class SignalAnalyzer(multiprocessing.Process):
                 if self._consumer_stop.is_set() and self._ring_count < self.analysis_block_samples:
                     break
                 raw = self._ring_pop(self.analysis_block_samples)
+                # the anchor is updated by the callback, read it together with the samples
+                sample_clock_t0 = self._sample_clock_t0
             chunk = iq_from_bytes(raw)
 
-            if self._sample_clock_t0 is None:
-                self._sample_clock_t0 = datetime.datetime.now()
+            if sample_clock_t0 is None:
+                sample_clock_t0 = self._sample_clock_t0 = datetime.datetime.now()
 
-            ts_start = self._sample_clock_t0 + datetime.timedelta(seconds=self._samples_consumed / self.sample_rate)
+            ts_start = sample_clock_t0 + datetime.timedelta(seconds=self._samples_consumed / self.sample_rate)
             self._samples_consumed += len(chunk)
 
             # the first milliseconds of a stream are a broadband transient (~18 dB over the noise for 5-7 ms on R820T
@@ -720,6 +756,9 @@ class SignalAnalyzer(multiprocessing.Process):
         self._consumer_stop = threading.Event()
         self._sample_clock_t0 = None
         self._samples_consumed = 0
+        self._samples_received = 0
+        self._anchor_min = None
+        self._anchor_samples = 0
         self._spectrum_noise = []
         self._spectrum_peak = None
         self._spectrum_ts = None

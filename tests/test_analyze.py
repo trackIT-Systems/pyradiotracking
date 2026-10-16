@@ -1013,3 +1013,50 @@ class TestExactShortcuts:
         an._analyze_block(burst_iq(30208, 0.0, 0.0), T0)
         assert an._window_rate == FS
         assert an._window[1] != first[1]
+
+
+class TestSampleClock:
+    """The sample clock is anchored to the wall clock, so signal timestamps don't drift with the SDR's crystal."""
+
+    CALLBACK = 131072
+
+    def run(self, an, seconds, ppm=0.0, latency_ms=(0.0, 5.0), seed=0, step_at=None, step_s=0.0, first_latency_ms=None):
+        """Simulate callbacks of an SDR whose crystal is off by `ppm`, return the timestamp error (s) at the end."""
+        rng = np.random.default_rng(seed)
+        t_wall0 = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+        received = 0
+        for k in range(int(seconds * FS / self.CALLBACK)):
+            received += self.CALLBACK
+            # the true wall time of the last sample: the SDR's clock runs ppm too fast or slow
+            true_end = received / FS / (1 + ppm * 1e-6)
+            wall = true_end + rng.uniform(*latency_ms) / 1000
+            if k == 0 and first_latency_ms is not None:
+                wall = true_end + first_latency_ms / 1000
+            if step_at is not None and true_end >= step_at:
+                wall += step_s
+            an._anchor_sample_clock(t_wall0 + datetime.timedelta(seconds=wall), self.CALLBACK)
+        # timestamp of the last sample as a signal would get it, against its true wall time
+        stamped = an._sample_clock_t0 + datetime.timedelta(seconds=received / FS)
+        true = t_wall0 + datetime.timedelta(seconds=true_end + (step_s if step_at is not None else 0))
+        return (stamped - true).total_seconds()
+
+    def test_first_callback_anchors_one_buffer_before(self):
+        an = make_analyzer()
+        now = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+        an._anchor_sample_clock(now, self.CALLBACK)
+        assert an._sample_clock_t0 == now - datetime.timedelta(seconds=self.CALLBACK / FS)
+
+    @pytest.mark.parametrize("ppm", [0.4, 50, -50])
+    def test_crystal_drift_is_corrected(self, ppm):
+        # one hour: without anchoring, 50 ppm are 180 ms
+        error = self.run(make_analyzer(), 3600, ppm=ppm)
+        assert abs(error) < 0.002
+
+    def test_latency_of_the_first_callback_is_corrected(self):
+        # the SDRs of a station started 1-9 ms apart, depending on the latency of their first callback
+        assert abs(self.run(make_analyzer(), 30, latency_ms=(0.0, 0.2), first_latency_ms=9.0)) < 0.0005
+
+    def test_wall_clock_steps_are_followed(self):
+        # e.g. NTP correcting the clock by a second after 15 s
+        error = self.run(make_analyzer(), 60, step_at=15, step_s=1.0)
+        assert abs(error) < 0.01

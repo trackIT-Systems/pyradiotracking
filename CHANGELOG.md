@@ -52,6 +52,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 - Matched signals are published after the matching timeout while idle and on shutdown, they were only published when a later signal arrived, so the last detections before a quiet period (or shutdown) were lost
 - The `[optional arguments]` section (`verbose`, `calibrate`, `station`, `schedule`, `config`) was ignored since Python 3.10, which names the group `[options]`. Config files are now read with either section name, if both are present `[options]` wins; written configs use the name of the running Python
 - The watchdog of the SDRs used the wall clock: a step of the clock (e.g. NTP correcting a station without RTC) restarted all SDRs (forward) or paused the watchdog (backward). It uses the monotonic clock now
+- Signal timestamps drifted with the crystal of the SDR (~35 ms per day at 0.4 ppm, seconds per day at tens of ppm) and kept any offset from lost samples or the latency of the first callback (1-9 ms between the SDRs of a station). The sample clock is anchored to the wall clock every 10 s of samples, to the earliest of that window's callbacks (the USB latency only delays them); wall clock steps are followed
 
 ### Removed
 
