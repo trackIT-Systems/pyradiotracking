@@ -509,3 +509,118 @@ def test_analyzer_process_starts_with_every_start_method(method):
         assert an.exitcode == 1
     finally:
         multiprocessing.set_start_method(previous, force=True)
+
+
+SEG_S = NPERSEG / FS
+US = 1e-6  # timedelta resolution
+
+
+def seg_s(n):
+    """Time of the start of segment `n`, nudged so that burst_iq's int() lands exactly on the segment's first sample."""
+    return (n * NPERSEG + 0.5) / FS
+
+
+def detect_blocks(an, iq, block):
+    """Run consecutive blocks through the analyzer like the consumer loop does, returns all filtered signals."""
+    found = []
+    for i in range(len(iq) // block):
+        sigs, spec = detect(an, iq[i * block : (i + 1) * block], T0 + datetime.timedelta(seconds=i * block / FS))
+        an._spectrogram_last = spec
+        found += sigs
+    return found
+
+
+class TestSegmentPrecision:
+    """A burst covering whole segments is reported with exactly these segments, no neighbouring noise segment."""
+
+    @pytest.mark.parametrize("start,length", [(0, 24), (1, 24), (40, 10), (40, 11), (80, 30), (5, 12)])
+    def test_start_and_duration_are_exact(self, start, length):
+        sigs, _ = detect(make_analyzer(), burst_iq(30208, seg_s(start), length * SEG_S))
+        assert len(sigs) == 1
+        assert (sigs[0].ts - T0).total_seconds() == pytest.approx(start * SEG_S, abs=US)
+        assert sigs[0].duration.total_seconds() == pytest.approx(length * SEG_S, abs=US)
+
+    def test_constant_tone_has_no_power_deviation(self):
+        # a noise segment counted into the signal raised the deviation to ~20 dB
+        sigs, _ = detect(make_analyzer(), burst_iq(30208, seg_s(40), 24 * SEG_S))
+        assert sigs[0].std == pytest.approx(0, abs=0.01)
+        assert sigs[0].avg == pytest.approx(sigs[0].max, abs=0.01)
+
+    @pytest.mark.parametrize("min_ms", [8, 10, 20])
+    def test_burst_of_the_minimum_duration_is_found_at_every_offset(self, min_ms):
+        # the search only seeds every int(min / segment) segments, a burst of the minimum duration must still be hit
+        an = make_analyzer(signal_min_duration_ms=min_ms)
+        length = int(np.ceil(min_ms / 1000 / SEG_S))
+        for start in range(20, 20 + length + 1):
+            sigs, _ = detect(an, burst_iq(30208, seg_s(start), length * SEG_S))
+            assert len(sigs) == 1, f"burst at segment {start} missed"
+
+    def test_minimum_duration_below_one_segment(self):
+        an = make_analyzer(signal_min_duration_ms=0.1)
+        sigs, _ = detect(an, burst_iq(30208, seg_s(30), 3 * SEG_S))
+        assert len(sigs) == 1
+        assert sigs[0].duration.total_seconds() == pytest.approx(3 * SEG_S, abs=US)
+
+    def test_noise_level_includes_calibration(self):
+        iq = burst_iq(30208, 0.03, 0.02)
+        plain = detect(make_analyzer(), iq)[0][0]
+        calibrated = detect(make_analyzer(calibration_db=6.0), iq)[0][0]
+        assert plain.noise - calibrated.noise == pytest.approx(6.0)
+        assert plain.avg - plain.noise == pytest.approx(calibrated.avg - calibrated.noise)
+
+
+class TestBlockBoundaries:
+    BLOCK = 30208
+    NB = 30208 // NPERSEG  # 118 segments per block
+
+    @pytest.mark.parametrize("pre", [1, 2, 10, 23])
+    def test_burst_across_the_boundary_has_exact_start(self, pre):
+        an = make_analyzer()
+        sigs = detect_blocks(an, burst_iq(2 * self.BLOCK, seg_s(self.NB - pre), 24 * SEG_S), self.BLOCK)
+        assert len(sigs) == 1
+        assert (sigs[0].ts - T0).total_seconds() == pytest.approx((self.NB - pre) * SEG_S, abs=US)
+        assert sigs[0].duration.total_seconds() == pytest.approx(24 * SEG_S, abs=US)
+        assert sigs[0].std == pytest.approx(0, abs=0.01)
+
+    def test_burst_ending_exactly_at_the_end_of_a_block_is_not_lost(self):
+        an = make_analyzer()
+        sigs = detect_blocks(an, burst_iq(2 * self.BLOCK, seg_s(self.NB - 24), 24 * SEG_S), self.BLOCK)
+        assert len(sigs) == 1
+        assert (sigs[0].ts - T0).total_seconds() == pytest.approx((self.NB - 24) * SEG_S, abs=US)
+        assert sigs[0].duration.total_seconds() == pytest.approx(24 * SEG_S, abs=US)
+
+    def test_burst_ending_one_segment_before_the_end_is_reported_once(self):
+        an = make_analyzer()
+        sigs = detect_blocks(an, burst_iq(2 * self.BLOCK, seg_s(self.NB - 25), 24 * SEG_S), self.BLOCK)
+        assert len(sigs) == 1
+
+    def test_burst_starting_exactly_at_a_block_is_reported_once(self):
+        an = make_analyzer()
+        sigs = detect_blocks(an, burst_iq(2 * self.BLOCK, seg_s(self.NB), 24 * SEG_S), self.BLOCK)
+        assert len(sigs) == 1
+        assert (sigs[0].ts - T0).total_seconds() == pytest.approx(self.NB * SEG_S, abs=US)
+
+    def test_pulse_train_over_many_blocks(self):
+        # a tag sending every 0.4 s, the pulses fall at every position relative to the blocks
+        an = make_analyzer()
+        n = 12 * self.BLOCK
+        iq = sum(burst_iq(n, 0.013 + k * 0.4, 0.02, seed=k, noise=1e-3 if k == 0 else 0) for k in range(int(n / FS / 0.4)))
+        sigs = detect_blocks(an, iq.astype(np.complex64), self.BLOCK)
+        starts = [(s.ts - T0).total_seconds() for s in sigs]
+        assert starts == pytest.approx([0.013 + k * 0.4 for k in range(len(starts))], abs=SEG_S)
+        assert len(starts) == int((n / FS - 0.033) / 0.4) + 1
+
+    def test_burst_longer_than_the_maximum_across_the_boundary_is_ignored(self):
+        an = make_analyzer(signal_max_duration_ms=40)
+        sigs = detect_blocks(an, burst_iq(2 * self.BLOCK, seg_s(self.NB - 30), 60 * SEG_S), self.BLOCK)
+        assert sigs == []
+
+    def test_burst_starting_in_the_first_segment_of_the_previous_block(self):
+        # a short block, the burst covers all of the first one
+        block = 16 * NPERSEG
+        an = make_analyzer(analysis_block_samples=block, signal_max_duration_ms=50)
+        sigs = detect_blocks(an, burst_iq(3 * block, seg_s(16), 20 * SEG_S), block)
+        assert len(sigs) == 1
+        assert (sigs[0].ts - T0).total_seconds() == pytest.approx(16 * SEG_S, abs=US)
+
+

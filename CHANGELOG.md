@@ -14,6 +14,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 - `signal_max_duration_ms` defaults to 50 (was 40), tags with up to 45 ms are detected
 - The noise level of a frequency is the median of its power over the block (divided by ln 2) instead of the mean. The mean was raised by the signal itself, so signals filling more than about 30 % of the block could not reach `snr_threshold_db` (with the old 0.1 s block: signals longer than ~32 ms were never detected at 5 dB). `noise_dBW` and `snr_dB` of signals are the true values now; weak, long signals are detected more readily
 - Python 3.12, 3.13 and 3.14 are supported (was >= 3.11); the test suite runs on all three, with cbor2 5 and 6
+- Signal timestamps are the start of the first segment of the signal (were the center of the segment before it). Together with the fixes below, `ts`, `duration`, `avg_dBW` and `std_dB` are exact to the segment for signals covering whole segments
 
 ### Added
 
@@ -24,6 +25,10 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 ### Fixed
 
 - Analyzers that hang after opening the device before the first USB sample are restarted
+- Signals counted the segment before their start into the signal: `duration` was one segment (0.85 ms) too long, `avg_dBW` too low and `std_dB` far too high (8 to 10 dB instead of about 1 dB for real tags)
+- The start of signals beginning in the previous analysis block was one more segment too early
+- Signals ending exactly at the end of an analysis block were lost: they were deferred to the next block, which did not look back for them
+- `noise_dBW` did not include the calibration of the device, `max_dBW` and `avg_dBW` did
 - Signal extraction raised `IndexError` (killing the analysis thread, and with it the station after the restarts) when the analysis block was a single FFT segment, e.g. `fft_nperseg` of 32768 at 300 kHz; the segment duration is computed from `fft_nperseg / sample_rate` now. Such a block is still too short to detect signals
 - Error messages for invalid `lna_gain`, `mixer_gain` and `vga_gain` values showed the raw format string and a tuple
 - `MatchedSignal` printed a power of exactly 0.0 dBW as `None`

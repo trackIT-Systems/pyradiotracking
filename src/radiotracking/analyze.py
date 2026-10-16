@@ -725,21 +725,30 @@ class SignalAnalyzer(multiprocessing.Process):
         segment_duration = self.fft_nperseg / self.sample_rate
         signal_min_duration_num = self.signal_min_duration / segment_duration
 
+        # segments of the previous block (negative indexes) a signal may start in
+        last = self._spectrogram_last
+        start_min = 0 if last is None else -len(last[0])
+
         # iterate over all frequencies
         for fi, fft in enumerate(spectrogram):
             # set freq_avg (noise power of this frequency) to None to allow lazy evaluation
             freq_avg = None
             freq = freqs[fi] + self.center_freq
-            ti_skip = 0
+            ti_skip = start_min
 
-            # jump over all power values in signal_min_duration_num distance
-            for ti in range(0, len(fft), max(1, int(signal_min_duration_num))):
+            def power_at(i: int) -> float:
+                return last[fi, i] if i < 0 else fft[i]
+
+            # jump over all power values in signal_min_duration_num distance, starting with the last segment of the
+            # previous block: a signal ending there was deferred to this block, as it might have continued
+            seeds = range(0, len(fft), max(1, int(signal_min_duration_num)))
+            for ti in ([-1] if last is not None else []) + list(seeds):
                 # skip values already inspected during a signal
                 if ti < ti_skip:
                     continue
 
                 # check if power of signal over threshold
-                if fft[ti] < self.signal_threshold:
+                if power_at(ti) < self.signal_threshold:
                     continue
 
                 # The noise power is estimated by the median over time, which is not raised by the signal itself
@@ -749,17 +758,13 @@ class SignalAnalyzer(multiprocessing.Process):
                     freq_avg = np.median(fft) / LN2
 
                 # check if snr of sample is below threshold
-                if fft[ti] / freq_avg < self.snr_threshold:
+                if power_at(ti) / freq_avg < self.snr_threshold:
                     continue
 
-                # loop down until threshold is undershot
+                # loop down until threshold is undershot, start is the first segment of the signal
                 start = ti
-                start_min = 0 if self._spectrogram_last is None else -len(self._spectrogram_last[0]) + 1
                 while start > start_min:
-                    if start < 0:
-                        power = self._spectrogram_last[fi, start]
-                    else:
-                        power = fft[start]
+                    power = power_at(start - 1)
 
                     # check if power of signal over threshold
                     if power < self.signal_threshold:
@@ -771,32 +776,29 @@ class SignalAnalyzer(multiprocessing.Process):
 
                     start -= 1
 
-                # loop up until threshold is undershot
+                # loop up until threshold is undershot, end is the first segment after the signal
                 end = ti
                 while end < len(fft):
-                    if fft[end] < self.signal_threshold:
-                        ti_skip = end
+                    power = power_at(end)
+                    if power < self.signal_threshold:
                         break
 
                     # check if snr of sample is below threshold
-                    if fft[end] / freq_avg < self.snr_threshold:
-                        ti_skip = end
+                    if power / freq_avg < self.snr_threshold:
                         break
 
                     end += 1
+                ti_skip = end
 
                 # skip signal, if it laps into next spectogram
                 if end == len(fft):
                     logger.debug("signal overlaps to next spectogram, skipping")
                     continue
 
-                # compute duration and skip, if too short
-                end_dt = times[end]
-                # if start has negative index
-                if start < 0:
-                    start_dt = -times[-start]
-                else:
-                    start_dt = times[start]
+                # compute duration and skip, if too short; the signal spans the segments start .. end - 1, times are
+                # taken from the segment edges (scipy's times are the segment centers)
+                start_dt = start * segment_duration
+                end_dt = end * segment_duration
 
                 duration_s = end_dt - start_dt
                 duration = datetime.timedelta(seconds=duration_s)
@@ -811,7 +813,7 @@ class SignalAnalyzer(multiprocessing.Process):
 
                 # extract data
                 if start < 0:
-                    data = np.concatenate((self._spectrogram_last[fi][start:], fft[:end]))
+                    data = np.concatenate((last[fi][start:], fft[:end]))
                 else:
                     data = fft[start:end]
 
@@ -819,7 +821,7 @@ class SignalAnalyzer(multiprocessing.Process):
                 avg = np.mean(data)
                 avg_dBW = dB(avg) - self.calibration_db
                 std_dB = np.std(dB(data))
-                noise_dBW = dB(freq_avg)
+                noise_dBW = dB(freq_avg) - self.calibration_db
                 snr_dB = dB(avg / freq_avg)
 
                 signal = Signal(
