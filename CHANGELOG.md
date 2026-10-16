@@ -34,6 +34,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 
 ### Fixed
 
+- Config files with unquoted strings are read again, e.g. `config = /boot/firmware/radiotracking.ini` or `station = name` as written by the stations; the config validation exited with "not a python literal" and the service did not start (#9). Only options of type string accept this, lists and numbers still need valid Python literals
 - Analyzers that hang after opening the device before the first USB sample are restarted
 - Signals counted the segment before their start into the signal: `duration` was one segment (0.85 ms) too long, `avg_dBW` too low and `std_dB` far too high (8 to 10 dB instead of about 1 dB for real tags)
 - The start of signals beginning in the previous analysis block was one more segment too early

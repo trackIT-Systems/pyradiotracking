@@ -215,6 +215,8 @@ class TestValueTypes:
             ("[analysis]\nanalysis_block_samples = None", "analysis_block_samples", None),
             ("[analysis]\nfft_window = ('kaiser', 8.0)", "fft_window", ("kaiser", 8.0)),
             ("[options]\nstation = 42", "station", "42"),
+            # unquoted strings, as in the config files of the stations
+            ("[options]\nstation = trackIT", "station", "trackIT"),
         ],
     )
     def test_value_is_converted(self, tmp_path, line, dest, expected):
@@ -228,7 +230,8 @@ class TestValueTypes:
             ("[rtl-sdr]\nsdr_timeout_s = 2.5", "'sdr_timeout_s' in [rtl-sdr]"),
             ("[rtl-sdr]\nsample_rate = 'fast'", "must be of type int"),
             ("[rtl-sdr]\ncalibration = ['x']", "must be of type float"),
-            ("[options]\nstation = trackIT", "strings need quotes"),
+            ("[rtl-sdr]\nsample_rate = fast", "strings need quotes"),
+            ("[rtl-sdr]\ndevice = [a, b]", "strings need quotes"),
             ("[analysis]\nsnr_threshold_db = 5 dB", "'snr_threshold_db' in [analysis] of"),
         ],
     )
@@ -284,3 +287,9 @@ class TestUnknownOptions:
 def test_spectrum_interval_is_read_from_the_config(tmp_path):
     cfg = write(tmp_path, "[rtl-sdr]\nspectrum_interval_s = 600\n")
     assert parser.parse_args(["--config", cfg]).spectrum_interval_s == 600.0
+
+
+def test_unquoted_config_path_of_the_stations_is_read(tmp_path):
+    """Issue #9: exported config files list ``config = /boot/firmware/radiotracking.ini`` without quotes."""
+    cfg = write(tmp_path, "[optional arguments]\nconfig = /boot/firmware/radiotracking.ini\nstation = trackIT\n")
+    assert parser.read_config(cfg) == {"config": "/boot/firmware/radiotracking.ini", "station": "trackIT"}

@@ -115,7 +115,9 @@ class ArgConfParser(ArgumentParser):
                 known.add(action.dest)
                 for section in sections:
                     if action.dest in config[section]:
-                        value = self._parse_value(path, section, action.dest, config[section][action.dest])
+                        value = self._parse_value(
+                            path, section, action.dest, config[section][action.dest], bare_string=action.type is str and action.nargs is None
+                        )
                         conf_dict[action.dest] = self._convert_value(path, section, action, value)
 
         for section in config.sections():
@@ -128,11 +130,18 @@ class ArgConfParser(ArgumentParser):
 
         return conf_dict
 
-    def _parse_value(self, path: str, section: str, key: str, raw: str) -> Any:
-        """Parse a config value as python literal, exit with a readable message if it is none."""
+    def _parse_value(self, path: str, section: str, key: str, raw: str, bare_string: bool = False) -> Any:
+        """
+        Parse a config value as python literal, exit with a readable message if it is none.
+
+        Config files of earlier versions (and the ones on the stations) contain unquoted strings, e.g.
+        ``config = /boot/firmware/radiotracking.ini``. For options of type str the raw value is used then.
+        """
         try:
             return literal_eval(raw)
         except (ValueError, SyntaxError):
+            if bare_string:
+                return raw
             self.error(
                 f"'{key}' in [{section}] of '{path}' is not a python literal: {raw!r} (strings need quotes, e.g. 'name')"
             )
