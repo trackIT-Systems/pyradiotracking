@@ -87,7 +87,8 @@ def test_write_config_with_help(tmp_path):
     args = parser.parse_args(["--config", str(tmp_path / "none.ini")])
     buf = io.StringIO()
     parser.write_config(args, buf, help=True)
-    assert "# center frequency to tune to (Hz)" in buf.getvalue()
+    # configparser lowercases the comment "keys" on some Python versions
+    assert "# center frequency to tune to (hz)" in buf.getvalue().lower()
 
 
 @pytest.mark.xfail(
