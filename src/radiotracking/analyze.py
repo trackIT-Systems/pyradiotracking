@@ -477,8 +477,9 @@ class SignalAnalyzer(multiprocessing.Process):
 
             logger.debug(
                 f"timings - spectogram: {timings['spectrogram'] * 1000:.1f} ms, "
+                + f"noise: {timings['noise'] * 1000:.1f} ms, "
                 + f"extract: {timings['extract'] * 1000:.1f} ms, "
-                + f"filter: {timings['filter'] * 1000:.1f} ms, "
+                + f"spectrum: {timings['spectrum'] * 1000:.1f} ms, "
                 + f"consume: {timings['consume'] * 1000:.1f} ms"
             )
 
@@ -515,31 +516,27 @@ class SignalAnalyzer(multiprocessing.Process):
 
         noise = noise_levels(spectrogram)
         bench_noise = time.perf_counter()
-        signals = self.extract_signals(freqs, times, spectrogram, ts_start, noise)
+        signals, n_raw = self.detect_signals(freqs, times, spectrogram, ts_start, noise)
         bench_extract = time.perf_counter()
 
         if spectrum:
             self._accumulate_spectrum(freqs, spectrogram, noise, ts_start, len(chunk))
         bench_spectrum = time.perf_counter()
 
-        filtered = self.filter_shadow_signals(signals)
-        bench_filter = time.perf_counter()
-
-        for s in filtered:
+        for s in signals:
             self.consume_signal(s)
         bench_consume = time.perf_counter()
 
         self._spectrogram_last = spectrogram
         return (
-            len(filtered),
             len(signals),
+            n_raw,
             {
                 "spectrogram": bench_spectrogram - bench_start,
                 "noise": bench_noise - bench_spectrogram,
                 "extract": bench_extract - bench_noise,
                 "spectrum": bench_spectrum - bench_extract,
-                "filter": bench_filter - bench_spectrum,
-                "consume": bench_consume - bench_filter,
+                "consume": bench_consume - bench_spectrum,
             },
         )
 
@@ -850,6 +847,97 @@ class SignalAnalyzer(multiprocessing.Process):
 
         return [sig for sig, shadow in zip(signals, signals_status) if shadow is None]
 
+    def _signal_runs(self, spectrogram: np.ndarray, noise: np.ndarray):
+        """
+        Find the runs of segments over the thresholds that end in this block and have a valid duration.
+
+        A run is a signal candidate of one frequency: consecutive segments over ``signal_threshold`` and
+        ``snr_threshold`` over the noise of the frequency. A run may start in the previous block (negative indexes), the
+        segments of the previous block are compared to the noise of this block. A run that reaches the end of this block
+        might continue, it is left to the next block.
+
+        Returns
+        -------
+        tuple
+            Arrays of the frequency index, the first segment, the segment after the run (relative to this block), the
+            start time, the duration (s) and the maximum power of every run.
+        """
+        last = self._spectrogram_last
+        n_last = 0 if last is None else last.shape[1]
+        n_bins = spectrogram.shape[0]
+
+        # segments by frequencies: the memory order of scipy's spectrogram, a copy in frequency order costs as much as
+        # the whole search
+        full = (spectrogram.T if last is None else np.concatenate((last.T, spectrogram.T), axis=0)).ravel()
+
+        # the same comparisons as the per segment search did (negated, which also keeps its behaviour for NaN); the
+        # threshold first, so that the SNR is only computed for the few segments over it
+        idx = np.flatnonzero(~(full < self.signal_threshold))
+        fi = idx % n_bins
+        power = full[idx]
+        passing = ~(power / noise[fi] < self.snr_threshold)
+        idx, fi, power = idx[passing], fi[passing], power[passing]
+
+        # runs of consecutive passing segments of a frequency, in the order frequency, then time: sorted by setting them
+        # in a mask in that order, which takes constant time, while sorting the indexes is slow for many noise peaks
+        n_segments = len(full) // n_bins
+        sorted_mask = np.zeros(n_bins * n_segments, dtype=bool)
+        sorted_mask[fi * n_segments + idx // n_bins] = True
+        key = np.flatnonzero(sorted_mask)
+        fi, segment = key // n_segments, key % n_segments
+        power = full[segment * n_bins + fi]
+        breaks = (np.diff(segment) != 1) | (np.diff(fi) != 0)
+        first = np.concatenate(([True], breaks))[: len(segment)]
+        final = np.concatenate((breaks, [True]))[: len(segment)]
+        peak = np.maximum.reduceat(power, np.flatnonzero(first)) if len(power) else power
+        fi = fi[first]
+        start = segment[first] - n_last
+        end = segment[final] + 1 - n_last
+
+        # runs entirely in the previous block were reported there, runs reaching the end of this block are deferred
+        keep = (end >= 0) & (end < spectrogram.shape[1])
+
+        # the segment duration is known from the configuration, a block may hold a single segment
+        segment_duration = self.fft_nperseg / self.sample_rate
+        start_dt = start * segment_duration
+        duration_s = end * segment_duration - start_dt
+        keep &= ~(duration_s < self.signal_min_duration) & ~(duration_s > self.signal_max_duration)
+
+        return fi[keep], start[keep], end[keep], start_dt[keep], duration_s[keep], peak[keep]
+
+    def _signal(
+        self,
+        freqs: np.ndarray,
+        spectrogram: np.ndarray,
+        noise: np.ndarray,
+        ts_start: datetime.datetime,
+        fi: int,
+        start: int,
+        end: int,
+        start_dt: float,
+        duration_s: float,
+    ) -> Signal:
+        """Create the signal of a run, see :meth:`_signal_runs`."""
+        last = self._spectrogram_last
+        freq_avg = noise[fi]
+        if start < 0:
+            data = np.concatenate((last[fi][start:], spectrogram[fi][:end]))
+        else:
+            data = spectrogram[fi][start:end]
+
+        avg = np.mean(data)
+        return Signal(
+            self.device,
+            (ts_start + datetime.timedelta(seconds=start_dt)).astimezone(),
+            freqs[fi] + self.center_freq,
+            datetime.timedelta(seconds=duration_s),
+            dB(np.max(data)) - self.calibration_db,
+            dB(avg) - self.calibration_db,
+            np.std(dB(data)),
+            dB(freq_avg) - self.calibration_db,
+            dB(avg / freq_avg),
+        )
+
     def extract_signals(
         self,
         freqs: np.ndarray,
@@ -859,6 +947,10 @@ class SignalAnalyzer(multiprocessing.Process):
         noise: Optional[np.ndarray] = None,
     ) -> List[Signal]:
         """Extract plateaus from spectogram data.
+
+        A signal is a run of segments of a frequency over ``signal_threshold`` and ``snr_threshold`` over the noise of
+        the frequency, lasting ``signal_min_duration`` to ``signal_max_duration``. It ends in this block, and may start
+        in the previous one.
 
         Parameters
         ----------
@@ -876,116 +968,66 @@ class SignalAnalyzer(multiprocessing.Process):
         Returns
         -------
         List[radiotracking.Signal]
-            List of signals extracted from spectogram.
+            List of signals extracted from spectogram, by frequency and time.
         """
-        signals = []
-
         if len(times) == 0:
-            return signals
+            return []
 
         if noise is None:
             noise = noise_levels(spectrogram)
 
-        # duration of one spectrogram segment (no overlap), known from the configuration, a block may hold a single one
-        segment_duration = self.fft_nperseg / self.sample_rate
-        signal_min_duration_num = self.signal_min_duration / segment_duration
+        runs = self._signal_runs(spectrogram, noise)
+        return [
+            self._signal(freqs, spectrogram, noise, ts_start, int(f), int(a), int(b), float(t), float(d))
+            for f, a, b, t, d in zip(*runs[:5])
+        ]
 
-        # segments of the previous block (negative indexes) a signal may start in
-        last = self._spectrogram_last
-        start_min = 0 if last is None else -len(last[0])
+    def detect_signals(
+        self,
+        freqs: np.ndarray,
+        times: np.ndarray,
+        spectrogram: np.ndarray,
+        ts_start: datetime.datetime,
+        noise: Optional[np.ndarray] = None,
+    ) -> tuple[List[Signal], int]:
+        """
+        Extract the signals of a spectrogram without their shadows.
 
-        # iterate over all frequencies
-        for fi, fft in enumerate(spectrogram):
-            # noise power of this frequency
-            freq_avg = noise[fi]
-            freq = freqs[fi] + self.center_freq
-            ti_skip = start_min
+        The same as :meth:`filter_shadow_signals` of :meth:`extract_signals`, but the shadows are dropped before signals
+        are created: a strong signal can leak into all frequencies, i.e. hundreds of shadows per block.
 
-            def power_at(i: int) -> float:
-                return last[fi, i] if i < 0 else fft[i]
+        Returns
+        -------
+        tuple[List[radiotracking.Signal], int]
+            The signals that are no shadow, and the number of signals before the shadow filter.
+        """
+        if len(times) == 0:
+            return [], 0
 
-            # jump over all power values in signal_min_duration_num distance, starting with the last segment of the
-            # previous block: a signal ending there was deferred to this block, as it might have continued
-            seeds = range(0, len(fft), max(1, int(signal_min_duration_num)))
-            for ti in ([-1] if last is not None else []) + list(seeds):
-                # skip values already inspected during a signal
-                if ti < ti_skip:
-                    continue
+        if noise is None:
+            noise = noise_levels(spectrogram)
 
-                # check if power of signal over threshold
-                if power_at(ti) < self.signal_threshold:
-                    continue
+        fi, start, end, start_dt, duration_s, peak = self._signal_runs(spectrogram, noise)
+        if len(fi) == 0:
+            return [], 0
 
-                # check if snr of sample is below threshold
-                if power_at(ti) / freq_avg < self.snr_threshold:
-                    continue
+        # maximum power of every run, as the signals will report it
+        max_dbw = dB(peak) - self.calibration_db
 
-                # loop down until threshold is undershot, start is the first segment of the signal
-                start = ti
-                while start > start_min:
-                    power = power_at(start - 1)
+        # start and end in microseconds after ts_start, rounded like the timestamps and durations of the signals
+        us = datetime.timedelta(microseconds=1)
+        ts_us = np.array([datetime.timedelta(seconds=float(t)) // us for t in start_dt], dtype=np.int64)
+        end_us = ts_us + np.array([datetime.timedelta(seconds=float(d)) // us for d in duration_s], dtype=np.int64)
 
-                    # check if power of signal over threshold
-                    if power < self.signal_threshold:
-                        break
+        # a signal is a shadow if a louder one overlaps in time (see is_shadow_of), compared in chunks to bound memory
+        shadow = np.zeros(len(fi), dtype=bool)
+        for i in range(0, len(fi), 1024):
+            rows = slice(i, i + 1024)
+            overlap = ~(ts_us[rows, None] > end_us[None, :]) & ~(end_us[rows, None] < ts_us[None, :])
+            shadow[rows] = np.any(overlap & (max_dbw[None, :] > max_dbw[rows, None]), axis=1)
 
-                    # check if snr of sample is below threshold
-                    if power / freq_avg < self.snr_threshold:
-                        break
-
-                    start -= 1
-
-                # loop up until threshold is undershot, end is the first segment after the signal
-                end = ti
-                while end < len(fft):
-                    power = power_at(end)
-                    if power < self.signal_threshold:
-                        break
-
-                    # check if snr of sample is below threshold
-                    if power / freq_avg < self.snr_threshold:
-                        break
-
-                    end += 1
-                ti_skip = end
-
-                # skip signal, if it laps into next spectogram
-                if end == len(fft):
-                    logger.debug("signal overlaps to next spectogram, skipping")
-                    continue
-
-                # compute duration and skip, if too short; the signal spans the segments start .. end - 1, times are
-                # taken from the segment edges (scipy's times are the segment centers)
-                start_dt = start * segment_duration
-                end_dt = end * segment_duration
-
-                duration_s = end_dt - start_dt
-                duration = datetime.timedelta(seconds=duration_s)
-                if duration_s < self.signal_min_duration:
-                    continue
-                if duration_s > self.signal_max_duration:
-                    logger.debug(
-                        f"signal duration too long ({duration_s * 1000} > {self.signal_max_duration*1000} ms), skipping"
-                    )
-                    continue
-                ts = ts_start + datetime.timedelta(seconds=start_dt)
-
-                # extract data
-                if start < 0:
-                    data = np.concatenate((last[fi][start:], fft[:end]))
-                else:
-                    data = fft[start:end]
-
-                max_dBW = dB(np.max(data)) - self.calibration_db
-                avg = np.mean(data)
-                avg_dBW = dB(avg) - self.calibration_db
-                std_dB = np.std(dB(data))
-                noise_dBW = dB(freq_avg) - self.calibration_db
-                snr_dB = dB(avg / freq_avg)
-
-                signal = Signal(
-                    self.device, ts.astimezone(), freq, duration, max_dBW, avg_dBW, std_dB, noise_dBW, snr_dB
-                )
-                signals.append(signal)
-
-        return signals
+        kept = [
+            self._signal(freqs, spectrogram, noise, ts_start, int(f), int(a), int(b), float(t), float(d))
+            for f, a, b, t, d in zip(fi[~shadow], start[~shadow], end[~shadow], start_dt[~shadow], duration_s[~shadow])
+        ]
+        return kept, len(fi)

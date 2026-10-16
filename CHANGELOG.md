@@ -20,6 +20,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 - `sdr_callback_length` defaults to librtlsdr's 131072 samples, which was used anyway: librtlsdr ignored the old default (`sample_rate`, not a multiple of 512 bytes). Other values are rounded to a multiple of 256 samples, with a warning
 - The sample ring holds at least one callback and one analysis block, `sdr_timeout_s` is raised to 1.5 times the duration of a callback (with a warning); a too short timeout restarted every SDR before its first callback until the station terminated
 - Values of the config file are converted to the option's type (e.g. `device = [0]` is `['0']`, `center_freq = 150.1e6` is an int); a value that is not a python literal or of the wrong type (e.g. `sdr_timeout_s = 2.5`) exits with a message naming the option
+- Signals are searched vectorized over all frequencies instead of per frequency in Python, and shadows are dropped before signals are created. The signals are identical (checked against the former search on 2.2 million signals of recorded IQ), the search takes 1.7 instead of 14 ms per block at 1.2 MHz with 1024 bins on a Pi 5, and a close tag leaking into all frequencies no longer creates hundreds of signals per block
 
 ### Added
 
