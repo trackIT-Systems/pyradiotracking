@@ -301,6 +301,8 @@ class MatchingSignal(MatchedSignal):
     def __init__(self, devices: List[str]):
         self.devices = devices
         self._sigs: Dict[str, Signal] = {}
+        self._created: float = 0.0
+        """Monotonic time the first member arrived, used by the matcher to flush on timeout."""
 
     @property
     def duration(self) -> datetime.timedelta:

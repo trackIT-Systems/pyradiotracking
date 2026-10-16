@@ -17,6 +17,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 ### Fixed
 
 - Analyzers that hang after opening the device before the first USB sample are restarted
+- Matched signals are published after the matching timeout while idle and on shutdown, they were only published when a later signal arrived, so the last detections before a quiet period (or shutdown) were lost
 - The `[optional arguments]` section (`verbose`, `calibrate`, `station`, `schedule`, `config`) was ignored since Python 3.10, which names the group `[options]`. Config files are now read with either section name, if both are present `[options]` wins; written configs use the name of the running Python
 
 ### Removed

@@ -467,9 +467,16 @@ class Runner:
             schedule.run_pending()
 
             # do a connector step with remaining time (check for queued signals)
-            self.connector.step(next_check - datetime.datetime.now())
+            # while idle, publish matches that can not be completed any more
+            if not self.connector.step(next_check - datetime.datetime.now()):
+                self.matcher.flush()
 
         logger.info("Exit main loop")
+
+        # publish the remaining matches and everything still queued
+        self.matcher.flush(force=True)
+        while self.connector.step(datetime.timedelta(seconds=0.1)):
+            pass
         self.connector.shutdown()
         exit(0)
 

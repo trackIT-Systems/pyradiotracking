@@ -297,6 +297,44 @@ class TestStartAnalyzers:
         assert exc.value.code == 0
         assert started == [1]
 
+    def test_main_flushes_matches_while_idle_and_on_exit(self, make_runner, monkeypatch):
+        r = make_runner()
+        monkeypatch.setattr(r, "start_analyzers", lambda: None)
+        monkeypatch.setattr(r, "check_analyzers", lambda: None)
+        calls = []
+        monkeypatch.setattr(r.matcher, "flush", lambda **kw: calls.append(kw))
+        steps = iter([True, False])  # afterwards: idle once more, and stop
+
+        def step(timeout):
+            try:
+                return next(steps)
+            except StopIteration:
+                r.running = False
+                return False
+
+        monkeypatch.setattr(r.connector, "step", step)
+        with pytest.raises(SystemExit):
+            r.main()
+        # not after the busy step, after each idle step, forced at the end
+        assert calls == [{}, {}, {"force": True}]
+
+    def test_pending_matches_are_published_on_exit(self, make_runner, make_signal, monkeypatch):
+        r = make_runner()
+        monkeypatch.setattr(r, "start_analyzers", lambda: None)
+        monkeypatch.setattr(r, "check_analyzers", lambda: None)
+        published = []
+        r.connector.consumers.append(SimpleNamespace(add=published.append))
+        r.connector.q.put(make_signal())
+        r.running = True
+        original = r.connector.step
+        # the main loop passes a possibly negative timeout, which would race with the queue's feeder thread
+        monkeypatch.setattr(
+            r.connector, "step", lambda t: (setattr(r, "running", False), original(datetime.timedelta(seconds=0.5)))[1]
+        )
+        with pytest.raises(SystemExit):
+            r.main()
+        assert [type(m).__name__ for m in published] == ["Signal", "MatchingSignal"]
+
     def test_main_starts_when_inside_schedule(self, make_runner, monkeypatch):
         now = datetime.datetime.now()
         if not (datetime.time(0, 5) < now.time() < datetime.time(23, 55)):

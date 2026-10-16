@@ -208,7 +208,7 @@ class TestProcessConnector:
         assert handler not in logging.getLogger("radiotracking").handlers
 
     def test_step_returns_on_timeout(self, tmp_path):
-        self.make(tmp_path).step(datetime.timedelta(seconds=0.05))
+        assert self.make(tmp_path).step(datetime.timedelta(seconds=0.05)) is False
 
     def test_step_dispatches_to_all_consumers(self, tmp_path, make_signal):
         conn = self.make(tmp_path)

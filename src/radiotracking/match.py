@@ -1,6 +1,7 @@
 import datetime
 import logging
 import multiprocessing
+import time
 from typing import List
 
 from radiotracking import AbstractMessage, MatchingSignal, Signal
@@ -54,6 +55,28 @@ class SignalMatcher(AbstractConsumer):
         self.signal_queue.put(msig)
         self._matched.remove(msig)
 
+    def flush(self, now: float | None = None, force: bool = False):
+        """
+        Publish matches that are complete, because no more signals can be added to them.
+
+        Matches are otherwise only published when a later signal arrives, so this has to be called
+        while idle, otherwise the last detections before a quiet period would never be published.
+
+        Parameters
+        ----------
+        now : float
+            Current time (``time.monotonic()``), defaults to the current time.
+        force : bool
+            Publish all pending matches, regardless of their age (e.g. on shutdown).
+        """
+        if now is None:
+            now = time.monotonic()
+
+        for msig in list(self._matched):
+            if force or msig._created + self.matching_timeout.total_seconds() < now:
+                logger.info(f"Flushing {msig}.")
+                self.consume(msig)
+
     def add(self, signal: AbstractMessage):
         """
         Add a signal to the matcher.
@@ -85,6 +108,7 @@ class SignalMatcher(AbstractConsumer):
                 return
 
         msig = MatchingSignal(self.devices)
+        msig._created = time.monotonic()
         msig.add_member(signal)
         logger.debug(f"Created new {msig}")
         self._matched.append(msig)

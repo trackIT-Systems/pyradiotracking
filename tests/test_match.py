@@ -1,5 +1,6 @@
 import datetime
 import queue
+import time
 
 import pytest
 
@@ -81,12 +82,44 @@ def test_duration_diff_is_optional(out, make_signal):
     assert len(m._matched) == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a pending match is only flushed when a later signal arrives, so the last detections before a quiet period (or shutdown) are never published",
-)
-def test_pending_match_is_flushed_without_further_signals(matcher, make_signal, out):
-    matcher.add(make_signal(device="0"))
-    # nothing else is detected, but time passes (state messages keep arriving)
-    matcher.add(StateMessage("0", T0 + datetime.timedelta(seconds=10), StateMessage.State.RUNNING))
-    assert len(drain(out)) == 1
+class TestFlush:
+    def test_flushes_timed_out_matches_without_further_signals(self, matcher, make_signal, out):
+        matcher.add(make_signal(device="0"))
+        matcher.flush(now=time.monotonic() + 10)
+        emitted = drain(out)
+        assert len(emitted) == 1
+        assert emitted[0]._avgs == [-55, None, None, None]
+        assert matcher._matched == []
+
+    def test_keeps_matches_that_can_still_grow(self, matcher, make_signal, out):
+        matcher.add(make_signal(device="0"))
+        matcher.flush()
+        assert drain(out) == []
+        assert len(matcher._matched) == 1
+
+    def test_only_old_matches_are_flushed(self, matcher, make_signal, out):
+        matcher.add(make_signal(device="0"))
+        matcher._matched[0]._created -= 5
+        matcher.add(make_signal(device="1", frequency=151_000_000))
+        matcher.flush()
+        assert len(drain(out)) == 1
+        assert len(matcher._matched) == 1
+
+    def test_force_flushes_everything_in_order(self, matcher, make_signal, out):
+        matcher.add(make_signal(device="0", frequency=150_000_000))
+        matcher.add(make_signal(device="0", frequency=151_000_000))
+        matcher.flush(force=True)
+        assert [m.frequency for m in drain(out)] == [150_000_000, 151_000_000]
+        assert matcher._matched == []
+
+    def test_flush_on_empty_matcher(self, matcher, out):
+        matcher.flush()
+        matcher.flush(force=True)
+        assert drain(out) == []
+
+    def test_a_flushed_match_is_not_extended(self, matcher, make_signal, out):
+        matcher.add(make_signal(device="0"))
+        matcher.flush(force=True)
+        matcher.add(make_signal(device="1"))
+        assert len(matcher._matched) == 1
+        assert matcher._matched[0]._avgs == [None, -55, None, None]

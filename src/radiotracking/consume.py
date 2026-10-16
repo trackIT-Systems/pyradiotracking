@@ -333,17 +333,23 @@ class ProcessConnector:
                     rt_log.removeHandler(c)
                 c.shutdown()
 
-    def step(self, timeout: datetime.timedelta):
+    def step(self, timeout: datetime.timedelta) -> bool:
         """
         Method that waits for new signals and publishes them to the consumers, blocking.
 
         Parameters
         ----------
         timeout : datetime.timedelta
-            The timeout for the blocking call."""
+            The timeout for the blocking call.
+
+        Returns
+        -------
+        bool
+            True if a message was published, False if the queue was empty for the whole timeout."""
         try:
             sig = self.q.get(timeout=timeout.total_seconds())
         except queue.Empty:
-            return
+            return False
 
         [c.add(sig) for c in self.consumers]
+        return True
