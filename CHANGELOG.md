@@ -18,6 +18,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 - Signal timestamps are counted from one callback before the first callback was received, i.e. from the first sample; they were late by one callback (0.44 s by default)
 - `sdr_callback_length` defaults to librtlsdr's 131072 samples, which was used anyway: librtlsdr ignored the old default (`sample_rate`, not a multiple of 512 bytes). Other values are rounded to a multiple of 256 samples, with a warning
 - The sample ring holds at least one callback and one analysis block, `sdr_timeout_s` is raised to 1.5 times the duration of a callback (with a warning); a too short timeout restarted every SDR before its first callback until the station terminated
+- Values of the config file are converted to the option's type (e.g. `device = [0]` is `['0']`, `center_freq = 150.1e6` is an int); a value that is not a python literal or of the wrong type (e.g. `sdr_timeout_s = 2.5`) exits with a message naming the option
 
 ### Added
 
@@ -33,6 +34,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 - Signals ending exactly at the end of an analysis block were lost: they were deferred to the next block, which did not look back for them
 - `noise_dBW` did not include the calibration of the device, `max_dBW` and `avg_dBW` did
 - On termination, the pending stall timeout cancelled the USB transfers a second time, and the analyzers exited with a `LibUSBError` traceback
+- A missing config file and unknown options (e.g. typos) in it are reported, they were ignored silently
 - Signal extraction raised `IndexError` (killing the analysis thread, and with it the station after the restarts) when the analysis block was a single FFT segment, e.g. `fft_nperseg` of 32768 at 300 kHz; the segment duration is computed from `fft_nperseg / sample_rate` now. Such a block is still too short to detect signals
 - Error messages for invalid `lna_gain`, `mixer_gain` and `vga_gain` values showed the raw format string and a tuple
 - `MatchedSignal` printed a power of exactly 0.0 dBW as `None`

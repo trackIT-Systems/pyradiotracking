@@ -10,6 +10,11 @@ from radiotracking.config import ArgConfParser
 
 parser = Runner.parser
 ETC_INI = Path(__file__).parent.parent / "etc" / "radiotracking.ini"
+# the config of tsOS-vhf, if this is checked out as its submodule
+TSOS_VHF_INI = next(
+    (p / "boot/firmware/radiotracking.ini" for p in Path(__file__).parents if (p / "boot/firmware/radiotracking.ini").exists()),
+    None,
+)
 
 
 def write(tmp_path, text):
@@ -173,3 +178,86 @@ class TestRemovedOptions:
 def test_analysis_block_samples_is_read_from_the_config(tmp_path):
     cfg = write(tmp_path, "[analysis]\nanalysis_block_samples = 30208\n")
     assert parser.parse_args(["--config", cfg]).analysis_block_samples == 30208
+
+
+class TestValueTypes:
+    """Values of the config file are python literals, the option's type is applied like argparse does."""
+
+    @pytest.mark.parametrize(
+        "line,dest,expected",
+        [
+            ("[rtl-sdr]\nsdr_timeout_s = 2.0", "sdr_timeout_s", 2),
+            ("[rtl-sdr]\ncenter_freq = 150.155e6", "center_freq", 150_155_000),
+            ("[rtl-sdr]\nsample_rate = '300000'", "sample_rate", 300_000),
+            ("[rtl-sdr]\ndevice = [0, 1]", "device", ["0", "1"]),
+            ("[rtl-sdr]\ndevice = ('0',)", "device", ["0"]),
+            ("[rtl-sdr]\ncalibration = [1, 2]", "calibration", [1.0, 2.0]),
+            ("[rtl-sdr]\ngain = 40", "gain", 40.0),
+            ("[analysis]\nfft_nperseg = 256.0", "fft_nperseg", 256),
+            ("[analysis]\nanalysis_block_samples = None", "analysis_block_samples", None),
+            ("[analysis]\nfft_window = ('kaiser', 8.0)", "fft_window", ("kaiser", 8.0)),
+            ("[options]\nstation = 42", "station", "42"),
+        ],
+    )
+    def test_value_is_converted(self, tmp_path, line, dest, expected):
+        value = getattr(parser.parse_args(["--config", write(tmp_path, line + "\n")]), dest)
+        assert value == expected
+        assert type(value) is type(expected)
+
+    @pytest.mark.parametrize(
+        "line,message",
+        [
+            ("[rtl-sdr]\nsdr_timeout_s = 2.5", "'sdr_timeout_s' in [rtl-sdr]"),
+            ("[rtl-sdr]\nsample_rate = 'fast'", "must be of type int"),
+            ("[rtl-sdr]\ncalibration = ['x']", "must be of type float"),
+            ("[options]\nstation = trackIT", "strings need quotes"),
+            ("[analysis]\nsnr_threshold_db = 5 dB", "'snr_threshold_db' in [analysis] of"),
+        ],
+    )
+    def test_invalid_value_exits_with_a_message(self, tmp_path, capsys, line, message):
+        with pytest.raises(SystemExit) as exc:
+            parser.parse_args(["--config", write(tmp_path, line + "\n")])
+        assert exc.value.code == 2
+        assert message in capsys.readouterr().err
+
+
+class TestUnknownOptions:
+    def test_typo_is_reported(self, tmp_path, caplog):
+        cfg = write(tmp_path, "[analysis]\nsnr_treshold_db = 10.0\n")
+        with caplog.at_level(logging.WARNING):
+            args = parser.parse_args(["--config", cfg])
+        assert "Ignoring unknown option 'snr_treshold_db' in [analysis]" in caplog.text
+        assert args.snr_threshold_db == 5.0
+
+    def test_option_in_another_section_is_known(self, tmp_path, caplog):
+        # options are only read from their own section, but are not unknown
+        cfg = write(tmp_path, "[analysis]\ngain = 10.0\n")
+        with caplog.at_level(logging.WARNING):
+            parser.parse_args(["--config", cfg])
+        assert "unknown" not in caplog.text
+
+    def test_disabled_dashboard_of_old_configs_is_ignored_silently(self, tmp_path, caplog):
+        cfg = write(tmp_path, "[dashboard]\ndashboard = False\ndashboard_host = 'localhost'\ndashboard_port = 8050\n")
+        with caplog.at_level(logging.WARNING):
+            parser.parse_args(["--config", cfg])
+        assert caplog.text == ""
+
+    def test_enabled_dashboard_warns(self, tmp_path, caplog):
+        cfg = write(tmp_path, "[dashboard]\ndashboard = True\n")
+        with caplog.at_level(logging.WARNING):
+            parser.parse_args(["--config", cfg])
+        assert "Ignoring 'dashboard' in [dashboard]" in caplog.text
+
+    def test_missing_config_file_warns(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING):
+            args = parser.parse_args(["--config", str(tmp_path / "missing.ini")])
+        assert "could not be read" in caplog.text
+        assert args.device == ["0"]
+
+    @pytest.mark.parametrize("path", [ETC_INI, TSOS_VHF_INI], ids=["example", "tsos-vhf"])
+    def test_shipped_configs_are_read_without_warnings(self, path, caplog):
+        if path is None:
+            pytest.skip("not checked out as submodule of tsOS-vhf")
+        with caplog.at_level(logging.WARNING):
+            parser.parse_args(["--config", str(path)])
+        assert caplog.text == ""

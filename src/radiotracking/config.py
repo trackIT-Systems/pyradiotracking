@@ -1,5 +1,5 @@
 import logging
-from argparse import ArgumentParser, Namespace
+from argparse import Action, ArgumentParser, Namespace
 from ast import literal_eval
 from configparser import ConfigParser
 from typing import Any, Dict, List, Optional, Sequence, Text, TextIO, Tuple
@@ -18,7 +18,14 @@ logger = logging.getLogger(__name__)
 # other than empty/false, because the station no longer behaves as configured.
 REMOVED_OPTIONS: Dict[str, str] = {
     "schedule": "the schedule of operation was removed, radiotracking runs permanently",
+    "dashboard": "the dashboard was removed",
 }
+
+# Sections of removed features, their keys are ignored without a warning about unknown options.
+REMOVED_SECTIONS: Tuple[str, ...] = ("dashboard",)
+
+# argparse types that are applied to values read from a config file, other types (e.g. literal_eval) are not.
+CONVERTED_TYPES = (int, float, str)
 
 
 class ArgConfParser(ArgumentParser):
@@ -87,9 +94,11 @@ class ArgConfParser(ArgumentParser):
         """
         # values are python literals, '%' must not be interpreted
         config = ConfigParser(interpolation=None)
-        config.read(path)
+        if not config.read(path):
+            logger.warning(f"Config file '{path}' could not be read, using defaults and command line arguments.")
 
         conf_dict = {}
+        known = {"config", *REMOVED_OPTIONS}
 
         for group in self._action_groups:
             # skip untitled groups
@@ -101,16 +110,53 @@ class ArgConfParser(ArgumentParser):
 
             # iterate actions and extract values
             for action in group._group_actions:
+                known.add(action.dest)
                 for section in sections:
                     if action.dest in config[section]:
-                        conf_dict[action.dest] = literal_eval(config[section][action.dest])
+                        value = self._parse_value(path, section, action.dest, config[section][action.dest])
+                        conf_dict[action.dest] = self._convert_value(path, section, action, value)
 
         for section in config.sections():
-            for key, message in REMOVED_OPTIONS.items():
-                if key in config[section] and literal_eval(config[section][key]):
-                    logger.warning(f"Ignoring '{key}' in [{section}] of '{path}': {message}.")
+            for key in config[section]:
+                if key in REMOVED_OPTIONS:
+                    if self._parse_value(path, section, key, config[section][key]):
+                        logger.warning(f"Ignoring '{key}' in [{section}] of '{path}': {REMOVED_OPTIONS[key]}.")
+                elif key not in known and section not in REMOVED_SECTIONS:
+                    logger.warning(f"Ignoring unknown option '{key}' in [{section}] of '{path}'.")
 
         return conf_dict
+
+    def _parse_value(self, path: str, section: str, key: str, raw: str) -> Any:
+        """Parse a config value as python literal, exit with a readable message if it is none."""
+        try:
+            return literal_eval(raw)
+        except (ValueError, SyntaxError):
+            self.error(
+                f"'{key}' in [{section}] of '{path}' is not a python literal: {raw!r} (strings need quotes, e.g. 'name')"
+            )
+
+    def _convert_value(self, path: str, section: str, action: Action, value: Any) -> Any:
+        """
+        Apply the type of an option to a value of the config file, as argparse does for command line arguments.
+
+        Integers are not truncated: a float is only accepted for an int option if it is integral (e.g. 150.1e6).
+        """
+        if value is None or action.type not in CONVERTED_TYPES:
+            return value
+
+        def convert(v):
+            if action.type is int and isinstance(v, float):
+                if not v.is_integer():
+                    raise ValueError(f"{v} is not an integer")
+                return int(v)
+            return action.type(v)
+
+        try:
+            if isinstance(value, (list, tuple)):
+                return [convert(v) for v in value]
+            return convert(value)
+        except (TypeError, ValueError) as err:
+            self.error(f"'{action.dest}' in [{section}] of '{path}' must be of type {action.type.__name__}: {err}")
 
     def write_config(self, args: Namespace, file: TextIO, help: bool = False):
         """
