@@ -401,6 +401,16 @@ class TestShadowFilter:
     def test_empty(self):
         assert make_analyzer().filter_shadow_signals([]) == []
 
+    @pytest.mark.xfail(strict=True, reason="the shadow filter ignores frequency and time alignment, see the wiki review")
+    def test_simultaneous_tags_on_distant_frequencies_are_both_detected(self):
+        # two tags 85 kHz apart, the weak one starts 5 ms after the strong one; the probability of a pulse overlapping
+        # some other tag's pulse grows with the number of tags in range (~4 % per tag at 20 ms pulses every second)
+        an = make_analyzer(signal_threshold_dbw=-120)
+        block = an._finalize_analysis_block_samples()
+        iq = burst_iq(block, 0.1, 0.02, tone_bin=TONE_BIN, amp=0.1) + burst_iq(block, 0.105, 0.02, tone_bin=-30, amp=1e-3, noise=0)
+        sigs, _ = detect(an, iq)
+        assert sorted(round((s.frequency - CENTER) / BIN_HZ) for s in sigs) == [-30, TONE_BIN]
+
     def test_frequency_is_not_considered(self, make_signal):
         # characterization: a weaker signal is dropped whenever a louder one overlaps in time,
         # even if it is 100 kHz away, i.e. two transmitters sending at the same time are not both detected

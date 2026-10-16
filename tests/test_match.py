@@ -123,3 +123,44 @@ class TestFlush:
         matcher.add(make_signal(device="1"))
         assert len(matcher._matched) == 1
         assert matcher._matched[0]._avgs == [None, -55, None, None]
+
+
+class TestMatchingEdges:
+    @pytest.mark.parametrize("offset,grouped", [(500, True), (-500, True), (501, False), (-501, False)])
+    def test_frequency_margin_is_half_the_bandwidth_to_each_side(self, matcher, make_signal, offset, grouped):
+        matcher.add(make_signal(device="0"))
+        matcher.add(make_signal(device="1", frequency=150_100_000.0 + offset))
+        assert len(matcher._matched) == (1 if grouped else 2)
+
+    @pytest.mark.parametrize("gap_ms,grouped", [(5, True), (6, False)])
+    def test_time_margin_applies_between_end_and_start(self, matcher, make_signal, gap_ms, grouped):
+        # the first signal lasts 20 ms, the second starts gap_ms after its end
+        matcher.add(make_signal(device="0", duration=0.02))
+        matcher.add(make_signal(device="1", ts=T0 + ms(20 + gap_ms), duration=0.02))
+        assert len(matcher._matched) == (1 if grouped else 2)
+
+    def test_members_arriving_out_of_order(self, matcher, make_signal):
+        # the analyzers run independently, a later detection may be queued first
+        matcher.add(make_signal(device="1", ts=T0 + ms(2)))
+        matcher.add(make_signal(device="0", ts=T0))
+        assert len(matcher._matched) == 1
+        assert matcher._matched[0].ts == T0
+
+    def test_simultaneous_tags_on_different_frequencies_are_separate(self, matcher, make_signal):
+        for dev in "01":
+            matcher.add(make_signal(device=dev, frequency=150_100_000.0, avg_dbw=-50))
+            matcher.add(make_signal(device=dev, frequency=150_120_000.0, avg_dbw=-70))
+        assert len(matcher._matched) == 2
+        assert sorted(m._avgs[:2] for m in matcher._matched) == [[-70, -70], [-50, -50]]
+
+    def test_next_pulse_of_the_same_tag_is_a_new_match(self, matcher, make_signal):
+        matcher.add(make_signal(device="0"))
+        matcher.add(make_signal(device="0", ts=T0 + datetime.timedelta(seconds=1)))
+        assert len(matcher._matched) == 2
+
+    def test_signal_of_an_unconfigured_device_is_not_in_the_output(self, matcher, make_signal):
+        # characterization: the device names of the analyzers and the matcher have to be the same strings
+        matcher.add(make_signal(device="0"))
+        matcher.add(make_signal(device="7"))
+        assert len(matcher._matched) == 1
+        assert matcher._matched[0]._avgs == [-55.0, None, None, None]
