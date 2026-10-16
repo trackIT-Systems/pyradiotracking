@@ -10,7 +10,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 
 ### Added
 
-- Test suite (`pytest`) covering messages, matching, bearing, configuration, consumers, signal analysis and the runner; known defects are recorded as strict `xfail` tests
+- Test suite (`pytest`) covering messages, matching, configuration, consumers, signal analysis and the runner; known defects are recorded as strict `xfail` tests
 - Sample rate (`--sample-rate`) and tuner bandwidth (`--tuner-bandwidth`) are configurable, tuner bandwidth defaults to twice the sample rate
 - SDR spectrogram metrics are published in state messages (`--status-interval`)
 
@@ -22,6 +22,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 
 - Web dashboard (`--dashboard`, `--dashboard-host`, `--dashboard-port`, `--dashboard-signals` and the `[dashboard]` config section) and the configuration web UI (`python3 -m radiotracking.config`)
 - `radiotracking.present` module, and the `dash` and `matplotlib` dependencies
+- `radiotracking.bearing` module (unused `Gottwald2019Bearings` bearing calculation from 2021)
 
   Config files that still contain a `[dashboard]` section keep working, the section is ignored.
 
