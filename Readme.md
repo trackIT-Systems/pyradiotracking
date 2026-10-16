@@ -49,6 +49,8 @@ pytest --cov=radiotracking
 
 The tests need neither an SDR nor librtlsdr: if librtlsdr is missing, a stand-in for `rtlsdr` is used. Tests marked `xfail` document known defects. They are strict, so fixing a defect makes its test fail until the marker is removed.
 
+`etc/benchmark.py` times every stage of the analysis per block on synthetic samples (`-s 1200000 -n 1024` for a wide band), e.g. to check the load before deploying on a Pi 4.
+
 GitHub Actions run the tests on every push to `main`: with Python 3.12, 3.13 and 3.14 on the latest dependencies, and with Python 3.13 on the minimum versions (those of Debian 13, which the stations run). The coverage report is shown in the summary of each run.
 
 ## Versioning

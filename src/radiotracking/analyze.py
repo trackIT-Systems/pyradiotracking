@@ -460,51 +460,88 @@ class SignalAnalyzer(multiprocessing.Process):
             ts_start = self._sample_clock_t0 + datetime.timedelta(seconds=self._samples_consumed / self.sample_rate)
             self._samples_consumed += len(chunk)
 
-            bench_start = time.time()
-            freqs, times, spectrogram = scipy.signal.spectrogram(
-                chunk,
-                fs=self.sample_rate,
-                window=self.fft_window,
-                nperseg=self.fft_nperseg,
-                noverlap=0,
-                return_onesided=False,
-            )
-            bench_spectrogram = time.time()
-
-            noise = noise_levels(spectrogram)
-            signals = self.extract_signals(freqs, times, spectrogram, ts_start, noise)
-            bench_extract = time.time()
-
             # the first milliseconds of a stream are a broadband transient (~18 dB over the noise for 5-7 ms on R820T
             # sticks), too short for a signal, but it would raise the peak of every frequency of the first interval
-            if self._samples_consumed > len(chunk):
-                self._accumulate_spectrum(freqs, spectrogram, noise, ts_start, len(chunk))
-
-            filtered = self.filter_shadow_signals(signals)
-            bench_filter = time.time()
-
-            for s in filtered:
-                self.consume_signal(s)
-            bench_consume = time.time()
+            n_kept, n_raw, timings = self._analyze_block(chunk, ts_start, spectrum=self._samples_consumed > len(chunk))
 
             buffer_len_dt = datetime.timedelta(seconds=len(chunk) / self.sample_rate)
             with self._ring_cv:
                 backlog_s = self._ring_count / self.sample_rate
             logger.info(
                 f"SDR {self.device} analyzed {len(chunk)} samples, "
-                f"filtered {len(filtered)} / {len(signals)} signals, "
+                f"filtered {n_kept} / {n_raw} signals, "
                 f"chunk len: {buffer_len_dt.total_seconds() * 1000:.1f} ms, "
                 f"ring backlog: {backlog_s:.3f} s, "
-                f"compute: {(bench_consume - bench_start) * 1000:.1f} ms"
+                f"compute: {sum(timings.values()) * 1000:.1f} ms"
             )
 
             logger.debug(
-                f"timings - spectogram: {(bench_spectrogram - bench_start) * 1000:.1f} ms, "
-                + f"extract: {(bench_extract - bench_spectrogram) * 1000:.1f} ms, "
-                + f"filter: {(bench_filter - bench_extract) * 1000:.1f} ms, "
-                + f"consume: {(bench_consume - bench_filter) * 1000:.1f} ms"
+                f"timings - spectogram: {timings['spectrogram'] * 1000:.1f} ms, "
+                + f"extract: {timings['extract'] * 1000:.1f} ms, "
+                + f"filter: {timings['filter'] * 1000:.1f} ms, "
+                + f"consume: {timings['consume'] * 1000:.1f} ms"
             )
-            self._spectrogram_last = spectrogram
+
+    def _analyze_block(
+        self, chunk: np.ndarray, ts_start: datetime.datetime, spectrum: bool = True
+    ) -> tuple[int, int, dict[str, float]]:
+        """
+        Detect and publish the signals of an analysis block, and add it to the spectrum.
+
+        Parameters
+        ----------
+        chunk: np.ndarray
+            IQ samples of the block
+        ts_start: datetime.datetime
+            start of the block
+        spectrum: bool
+            whether the block is added to the spectrum message
+
+        Returns
+        -------
+        tuple[int, int, dict[str, float]]
+            The number of published signals, of signals before the shadow filter, and the time (s) of every stage.
+        """
+        bench_start = time.perf_counter()
+        freqs, times, spectrogram = scipy.signal.spectrogram(
+            chunk,
+            fs=self.sample_rate,
+            window=self.fft_window,
+            nperseg=self.fft_nperseg,
+            noverlap=0,
+            return_onesided=False,
+        )
+        bench_spectrogram = time.perf_counter()
+
+        noise = noise_levels(spectrogram)
+        bench_noise = time.perf_counter()
+        signals = self.extract_signals(freqs, times, spectrogram, ts_start, noise)
+        bench_extract = time.perf_counter()
+
+        if spectrum:
+            self._accumulate_spectrum(freqs, spectrogram, noise, ts_start, len(chunk))
+        bench_spectrum = time.perf_counter()
+
+        filtered = self.filter_shadow_signals(signals)
+        bench_filter = time.perf_counter()
+
+        for s in filtered:
+            self.consume_signal(s)
+        bench_consume = time.perf_counter()
+
+        self._spectrogram_last = spectrogram
+        return (
+            len(filtered),
+            len(signals),
+            {
+                "spectrogram": bench_spectrogram - bench_start,
+                "noise": bench_noise - bench_spectrogram,
+                "extract": bench_extract - bench_noise,
+                "spectrum": bench_spectrum - bench_extract,
+                "filter": bench_filter - bench_spectrum,
+                "consume": bench_consume - bench_filter,
+            },
+        )
 
     def run(self):
         """
