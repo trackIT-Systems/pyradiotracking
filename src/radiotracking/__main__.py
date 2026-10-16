@@ -379,6 +379,15 @@ class Runner:
         signal.signal(signal.SIGINT, lambda sig, _: self.terminate(sig))
         signal.signal(signal.SIGTERM, lambda sig, _: self.terminate(sig))
 
+        # a device can only be opened once, a duplicate would use up its restarts and then terminate the station
+        if len(self.args.device) == 0:
+            logger.critical("No devices configured.")
+            exit(1)
+        duplicates = sorted({d for d in self.args.device if self.args.device.count(d) > 1})
+        if duplicates:
+            logger.critical(f"Devices {duplicates} are configured more than once in {self.args.device}.")
+            exit(1)
+
         # initialize calibration parameter if unset
         if len(self.args.calibration) == 0:
             self.args.calibration = [0.0] * len(self.args.device)

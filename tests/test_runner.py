@@ -83,6 +83,18 @@ class TestInit:
             make_runner("-d", "0", "1", "-c", "1.0")
         assert exc.value.code == 1
 
+    def test_no_devices(self, make_runner):
+        with pytest.raises(SystemExit) as exc:
+            make_runner("-d")
+        assert exc.value.code == 1
+
+    @pytest.mark.parametrize("devices", [["0", "0"], ["0", "1", "0"]])
+    def test_duplicate_devices(self, make_runner, caplog, devices):
+        with pytest.raises(SystemExit) as exc:
+            make_runner("-d", *devices)
+        assert exc.value.code == 1
+        assert "['0'] are configured more than once" in caplog.text
+
     def test_default_analysis_block_does_not_warn(self, make_runner, caplog):
         with caplog.at_level(logging.WARNING):
             make_runner()

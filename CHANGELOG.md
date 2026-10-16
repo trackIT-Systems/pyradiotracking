@@ -35,6 +35,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 - `noise_dBW` did not include the calibration of the device, `max_dBW` and `avg_dBW` did
 - On termination, the pending stall timeout cancelled the USB transfers a second time, and the analyzers exited with a `LibUSBError` traceback
 - A missing config file and unknown options (e.g. typos) in it are reported, they were ignored silently
+- No devices or a device configured more than once exit at startup, a duplicate used to fail and terminate the station after its restarts
 - Signal extraction raised `IndexError` (killing the analysis thread, and with it the station after the restarts) when the analysis block was a single FFT segment, e.g. `fft_nperseg` of 32768 at 300 kHz; the segment duration is computed from `fft_nperseg / sample_rate` now. Such a block is still too short to detect signals
 - Error messages for invalid `lna_gain`, `mixer_gain` and `vga_gain` values showed the raw format string and a tuple
 - `MatchedSignal` printed a power of exactly 0.0 dBW as `None`
