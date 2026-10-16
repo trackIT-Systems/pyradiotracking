@@ -153,15 +153,6 @@ class Runner:
         "-mv", "--mqtt-verbose", help="increase mqtt logging verbosity", action="count", default=0
     )
 
-    # dashboard options
-    dashboard_options = parser.add_argument_group("dashboard")
-    dashboard_options.add_argument("--dashboard", help="enable web-dashboard", action="store_true")
-    dashboard_options.add_argument(
-        "--dashboard-host", help="hostname to bind the dashboard to", default="localhost", type=str
-    )
-    dashboard_options.add_argument("--dashboard-port", help="port to bind the dashboard to", default=8050, type=int)
-    dashboard_options.add_argument("--dashboard-signals", help="number of signals to present", default=100, type=int)
-
     def create_and_start(
         self, device: str, calibration_db: float, sdr_max_restart: int | None = None
     ) -> SignalAnalyzer:
@@ -368,9 +359,6 @@ class Runner:
             # Stop the analyzers, and wait for completion
             self.stop_analyzers()
 
-            if self.dashboard and self.dashboard.is_alive():
-                self.dashboard.stop()
-
             logger.warning("Termination complete.")
         finally:
             self._terminate_in_progress = False
@@ -416,15 +404,6 @@ class Runner:
         self.matcher = SignalMatcher(signal_queue=self.connector.q, **self.args.__dict__)
         self.connector.consumers.append(self.matcher)
 
-        # add vizualization consumer
-        if self.args.dashboard:
-            from radiotracking.present import Dashboard
-
-            self.dashboard = Dashboard(**self.args.__dict__)
-            self.connector.consumers.append(self.dashboard)
-        else:
-            self.dashboard = None
-
         self.schedule = []
 
         for entry in self.args.schedule:
@@ -465,9 +444,6 @@ class Runner:
         Run the main loop of the application.
         """
         logger.warning("Running radiotracking...")
-
-        if self.dashboard:
-            self.dashboard.start()
 
         # evaluate schedulings, and start if current time is in interval
         ts = datetime.datetime.now()

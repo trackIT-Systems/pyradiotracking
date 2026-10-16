@@ -12,8 +12,7 @@ usage: radiotracking [-h] [-v] [--config CONFIG] [--station STATION] [--schedule
                      [--sdr-max-restart SDR_MAX_RESTART] [--sdr-timeout-s SDR_TIMEOUT_S] [-n FFT_NPERSEG] [-w FFT_WINDOW] [-t SIGNAL_THRESHOLD_DBW]
                      [-r SNR_THRESHOLD_DB] [-l SIGNAL_MIN_DURATION_MS] [-u SIGNAL_MAX_DURATION_MS] [--matching-timeout-s MATCHING_TIMEOUT_S]
                      [-mt MATCHING_TIME_DIFF_S] [-mb MATCHING_BANDWIDTH_HZ] [-md MATCHING_DURATION_DIFF_MS] [--sig-stdout] [--match-stdout]
-                     [--path PATH] [--csv] [--export-config] [--mqtt] [--mqtt-host MQTT_HOST] [--mqtt-port MQTT_PORT] [--dashboard]
-                     [--dashboard-host DASHBOARD_HOST] [--dashboard-port DASHBOARD_PORT] [--dashboard-signals DASHBOARD_SIGNALS]
+                     [--path PATH] [--csv] [--export-config] [--mqtt] [--mqtt-host MQTT_HOST] [--mqtt-port MQTT_PORT]
 
 Detect signals of wildlife tracking systems with RTL SDR devices
 
@@ -77,15 +76,6 @@ publish:
                         hostname of mqtt broker (default: localhost)
   --mqtt-port MQTT_PORT
                         port of mqtt broker (default: 1883)
-
-dashboard:
-  --dashboard           enable web-dashboard (default: False)
-  --dashboard-host DASHBOARD_HOST
-                        hostname to bind the dashboard to (default: localhost)
-  --dashboard-port DASHBOARD_PORT
-                        port to bind the dashboard to (default: 8050)
-  --dashboard-signals DASHBOARD_SIGNALS
-                        number of signals to present (default: 100)
 ```
 
 ### Troubleshooting

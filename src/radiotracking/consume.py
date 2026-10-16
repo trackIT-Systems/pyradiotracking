@@ -148,10 +148,6 @@ class MQTTConsumer(logging.StreamHandler, AbstractConsumer):
 
         path = f"{self.prefix}/log"
 
-        # skip dash messages
-        if record.name.startswith("radiotracking.present"):
-            return
-
         # publish csv
         csv_io = StringIO()
         csv.writer(csv_io, dialect="excel", delimiter=";").writerow(

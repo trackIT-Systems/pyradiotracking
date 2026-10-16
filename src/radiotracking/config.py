@@ -153,18 +153,3 @@ class ArgConfParser(ArgumentParser):
 
         config.write(file)
 
-
-if __name__ == "__main__":
-    import radiotracking.present
-    from radiotracking.__main__ import Runner
-
-    parser: ArgConfParser = Runner.parser
-    args = parser.parse_args()
-
-    # logging levels increase in steps of 10, start with warning
-    logging_level = max(0, logging.WARN - (args.verbose * 10))
-    logging.basicConfig(level=logging_level)
-
-    dashboard = radiotracking.present.ConfigDashboard(args, parser.immutable_args(), **args.__dict__)
-
-    dashboard.run()
