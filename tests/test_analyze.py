@@ -280,6 +280,12 @@ class TestHandleSignal:
         assert an._stop_requested
         assert an.signal_queue.get_nowait().state is StateMessage.State.STOPPED
 
+    def test_stop_clears_a_pending_stall_timeout(self, monkeypatch):
+        alarms = []
+        monkeypatch.setattr(signal, "alarm", lambda s: alarms.append(s))
+        make_analyzer().handle_signal(signal.SIGTERM, None)
+        assert alarms == [0]
+
     def test_sigalrm_before_the_sdr_is_open(self):
         an = make_analyzer()
         an.handle_signal(signal.SIGALRM, None)
@@ -321,6 +327,55 @@ class TestRunTermination:
         assert sdrs[0].closed
         assert not sdrs[0].streamed
         assert an.streaming_ts.value == 0.0
+
+    def fake_streaming_sdr(self, monkeypatch, an, error, stop_first):
+        import rtlsdr.rtlsdr
+
+        class FakeSdr:
+            closed = False
+
+            def __init__(self, index):
+                self.sample_rate = FS
+
+            def set_manual_gain_enabled(self, enabled):
+                pass
+
+            def set_agc_mode(self, enabled):
+                pass
+
+            def close(self):
+                FakeSdr.closed = True
+
+            def cancel_read_async(self):
+                pass
+
+            def read_samples_async(self, *args):
+                if stop_first:
+                    an.handle_signal(signal.SIGTERM, None)
+                raise error
+
+        monkeypatch.setattr(rtlsdr.rtlsdr, "RtlSdr", FakeSdr)
+        # no librtlsdr in the test environment, the gain falls back to sdr.gain
+        monkeypatch.setattr(rtlsdr, "librtlsdr", None, raising=False)
+        return FakeSdr
+
+    def test_usb_error_after_a_stop_request_ends_streaming_cleanly(self, monkeypatch):
+        import rtlsdr.rtlsdr
+
+        an = make_analyzer()
+        sdr = self.fake_streaming_sdr(monkeypatch, an, rtlsdr.rtlsdr.LibUSBError("cancelled"), stop_first=True)
+        an.run()
+        assert sdr.closed
+
+    def test_usb_error_while_streaming_is_raised(self, monkeypatch):
+        import rtlsdr.rtlsdr
+
+        an = make_analyzer()
+        sdr = self.fake_streaming_sdr(monkeypatch, an, rtlsdr.rtlsdr.LibUSBError("gone"), stop_first=False)
+        with pytest.raises(rtlsdr.rtlsdr.LibUSBError):
+            an.run()
+        assert sdr.closed
+
 
 class TestShadowFilter:
     def test_louder_overlapping_signal_shadows(self, make_signal):

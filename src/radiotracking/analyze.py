@@ -619,6 +619,11 @@ class SignalAnalyzer(multiprocessing.Process):
 
         try:
             self.sdr.read_samples_async(self._producer_enqueue, self.sdr_callback_length)
+        except rtlsdr.rtlsdr.LibUSBError as err:
+            # librtlsdr may report the cancellation of the transfers as error
+            if not self._stop_requested:
+                raise
+            logger.info("SDR %s: streaming ended after stop request (%s).", self.device, err)
         finally:
             if self._consumer_stop is not None:
                 self._consumer_stop.set()
@@ -658,6 +663,8 @@ class SignalAnalyzer(multiprocessing.Process):
             return
 
         self._stop_requested = True
+        # cancelling may take a while, a pending stall timeout must not cancel a second time
+        signal.alarm(0)
         self.update_state(datetime.datetime.now(), StateMessage.State.STOPPED)
         if self._consumer_stop is not None:
             self._consumer_stop.set()
