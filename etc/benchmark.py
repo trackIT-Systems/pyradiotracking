@@ -30,7 +30,7 @@ except ImportError:
     pkg.librtlsdr = types.ModuleType("rtlsdr.librtlsdr")
     sys.modules.update({"rtlsdr": pkg, "rtlsdr.rtlsdr": pkg.rtlsdr, "rtlsdr.librtlsdr": pkg.librtlsdr})
 
-from radiotracking.analyze import SignalAnalyzer  # noqa: E402
+from radiotracking.analyze import SignalAnalyzer, iq_from_bytes  # noqa: E402
 
 parser = argparse.ArgumentParser(
     prog="benchmark",
@@ -61,14 +61,6 @@ def raw_samples(sample_rate: int, nperseg: int, seconds: float, amplitude: float
     raw[0::2] = np.clip(np.round(iq.real * 127.5 + 127.5), 0, 255)
     raw[1::2] = np.clip(np.round(iq.imag * 127.5 + 127.5), 0, 255)
     return raw
-
-
-def to_iq(raw: np.ndarray) -> np.ndarray:
-    """IQ samples as the analyzer gets them (pyrtlsdr's conversion, stored as complex64 in the ring)."""
-    iq = raw.astype(np.float64).view(np.complex128)
-    iq /= 127.5
-    iq -= 1 + 1j
-    return iq.astype(np.complex64)
 
 
 def analyzer(args) -> SignalAnalyzer:
@@ -118,7 +110,7 @@ def main():
         for i in range(len(raw) // (2 * block)):
             chunk_raw = raw[2 * i * block : 2 * (i + 1) * block]
             start = time.perf_counter()
-            chunk = to_iq(chunk_raw)
+            chunk = iq_from_bytes(chunk_raw)
             stages["convert"].append(time.perf_counter() - start)
 
             ts = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc) + datetime.timedelta(seconds=i * block_s)

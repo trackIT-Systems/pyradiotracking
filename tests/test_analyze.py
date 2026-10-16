@@ -62,6 +62,14 @@ def burst_iq(n_samples, start_s, dur_s, tone_bin=TONE_BIN, amp=1.0, noise=1e-3, 
     return iq.astype(np.complex64)
 
 
+def iq_bytes(iq):
+    """The bytes an RTL-SDR would deliver for IQ samples (interleaved I and Q, 127.5 is zero)."""
+    raw = np.empty(2 * len(iq), dtype=np.uint8)
+    raw[0::2] = np.clip(np.round(iq.real * 127.5 + 127.5), 0, 255)
+    raw[1::2] = np.clip(np.round(iq.imag * 127.5 + 127.5), 0, 255)
+    return raw
+
+
 def spectrogram(an, iq):
     return scipy.signal.spectrogram(
         iq, fs=an.sample_rate, window=an.fft_window, nperseg=an.fft_nperseg, noverlap=0, return_onesided=False
@@ -312,7 +320,7 @@ class TestRunTermination:
             def close(self):
                 self.closed = True
 
-            def read_samples_async(self, *args):
+            def read_bytes_async(self, *args):
                 self.streamed = True
 
         monkeypatch.setattr(rtlsdr.rtlsdr, "RtlSdr", FakeSdr)
@@ -342,7 +350,7 @@ class TestRunTermination:
             def cancel_read_async(self):
                 pass
 
-            def read_samples_async(self, *args):
+            def read_bytes_async(self, *args):
                 if stop_first:
                     an.handle_signal(signal.SIGTERM, None)
                 raise error
@@ -732,7 +740,7 @@ class TestStreaming:
         an.last_state = None
         an.analysis_block_samples = an._finalize_analysis_block_samples()
         an._ring_capacity = int(FS * an.sdr_timeout_s)
-        an._ring_buffer = np.empty(an._ring_capacity, dtype=np.complex64)
+        an._ring_buffer = np.empty((an._ring_capacity, 2), dtype=np.uint8)
         an._ring_cv = threading.Condition()
         an._consumer_stop = threading.Event()
         an.sdr = type("Sdr", (), {"cancelled": False, "cancel_read_async": lambda self: setattr(self, "cancelled", True)})()
@@ -749,7 +757,7 @@ class TestStreaming:
 
     def test_sample_clock_starts_one_buffer_before_the_first_callback(self, an):
         before = datetime.datetime.now()
-        an._producer_enqueue(np.zeros(131072, dtype=np.complex64), None)
+        an._producer_enqueue(np.zeros(2 * 131072, dtype=np.uint8), None)
         after = datetime.datetime.now()
         offset = datetime.timedelta(seconds=131072 / FS)
         assert before - offset <= an._sample_clock_t0 <= after - offset
@@ -763,7 +771,7 @@ class TestStreaming:
         consumer.start()
         # odd callback lengths, the blocks do not align with them
         for i in range(0, n, 131072):
-            an._producer_enqueue(iq[i : i + 131072], None)
+            an._producer_enqueue(iq_bytes(iq[i : i + 131072]), None)
         an._consumer_stop.set()
         with an._ring_cv:
             an._ring_cv.notify_all()
@@ -787,7 +795,7 @@ class TestStreaming:
         consumer.start()
         iq = burst_iq(4 * an.analysis_block_samples, 0.0, 0.0)
         for i in range(0, len(iq), 131072):
-            an._producer_enqueue(iq[i : i + 131072], None)
+            an._producer_enqueue(iq_bytes(iq[i : i + 131072]), None)
         an._consumer_stop.set()
         with an._ring_cv:
             an._ring_cv.notify_all()
@@ -804,9 +812,9 @@ class TestStreaming:
         assert msgs[0].duration.total_seconds() == pytest.approx(2 * an.analysis_block_samples / FS, abs=US)
 
     def test_ring_overflow_stops_streaming(self, an):
-        an._producer_enqueue(np.zeros(an._ring_capacity - 10, dtype=np.complex64), None)
+        an._producer_enqueue(np.zeros(2 * (an._ring_capacity - 10), dtype=np.uint8), None)
         assert not an.sdr.cancelled
-        an._producer_enqueue(np.zeros(11, dtype=np.complex64), None)
+        an._producer_enqueue(np.zeros(2 * 11, dtype=np.uint8), None)
         assert an.sdr.cancelled
         assert an._consumer_stop.is_set()
         assert an.last_state.state is StateMessage.State.STOPPED
@@ -924,3 +932,46 @@ class TestSpectrum:
 
     def test_disabled(self):
         assert self.run(make_analyzer(spectrum_interval_s=0), burst_iq(6 * self.BLOCK, 0.0, 0.0)) == []
+
+
+class TestBytes:
+    def test_iq_from_bytes_equals_pyrtlsdr(self):
+        """The table gives exactly the values of pyrtlsdr's packed_bytes_to_iq, stored as complex64."""
+        from radiotracking.analyze import iq_from_bytes
+
+        raw = np.array([(i, q) for i in range(256) for q in range(256)], dtype=np.uint8).ravel()
+        # pyrtlsdr's packed_bytes_to_iq
+        expected = raw.astype(np.float64).view(np.complex128)
+        expected /= 127.5
+        expected -= 1 + 1j
+        expected = expected.astype(np.complex64)
+        assert np.array_equal(iq_from_bytes(raw).view(np.uint64), expected.view(np.uint64))
+        assert np.array_equal(iq_from_bytes(raw.reshape(-1, 2)), iq_from_bytes(raw))
+
+    def test_ring_of_byte_rows_wraps_around(self):
+        an = make_analyzer()
+        an._ring_capacity = 4
+        an._ring_buffer = np.empty((4, 2), dtype=np.uint8)
+        rows = np.arange(12, dtype=np.uint8).reshape(-1, 2)
+        assert an._ring_push(rows[:3])
+        assert an._ring_pop(2).tolist() == [[0, 1], [2, 3]]
+        assert an._ring_push(rows[3:6])  # wraps
+        assert an._ring_pop(4).tolist() == [[4, 5], [6, 7], [8, 9], [10, 11]]
+
+    def test_callback_takes_the_ctypes_buffer_of_librtlsdr(self):
+        import ctypes
+        import threading
+
+        an = make_analyzer(sdr_timeout_s=5)
+        an.last_state = None
+        an._ring_capacity = 1024
+        an._ring_buffer = np.empty((1024, 2), dtype=np.uint8)
+        an._ring_cv = threading.Condition()
+        an._consumer_stop = threading.Event()
+        data = bytes(range(256)) * 2
+        try:
+            an._producer_enqueue((ctypes.c_ubyte * len(data)).from_buffer_copy(data), None)
+        finally:
+            signal.alarm(0)
+        assert an._ring_count == 256
+        assert an._ring_pop(2).tolist() == [[0, 1], [2, 3]]

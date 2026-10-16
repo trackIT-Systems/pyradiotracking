@@ -18,6 +18,22 @@ from radiotracking import Signal, SpectrumMessage, StateMessage, dB, from_dB
 logger = logging.getLogger(__name__)
 
 
+def iq_from_bytes(raw: np.ndarray) -> np.ndarray:
+    """
+    Convert the bytes of an RTL-SDR (interleaved I and Q) to complex IQ samples.
+
+    The same values as pyrtlsdr's ``read_samples`` (computed in float64) stored as complex64: ``(b - 127.5) / 127.5`` in
+    float32 is exact for all 256 byte values, and takes a third of the time of a lookup table.
+
+    Parameters
+    ----------
+    raw: np.ndarray
+        uint8 bytes, flat or one row of I and Q per sample.
+    """
+    half = np.float32(127.5)
+    return ((raw.astype(np.float32) - half) / half).view(np.complex64).reshape(-1)
+
+
 LN2 = float(np.log(2))
 """Median of an exponential distribution in units of its mean, see :func:`noise_levels`."""
 
@@ -209,7 +225,7 @@ class SignalAnalyzer(multiprocessing.Process):
     last_data_ts: multiprocessing.Value
         The multiprocessing value to put the last data timestamp in.
     streaming_ts: multiprocessing.Value
-        Wall time when async USB streaming was entered; 0 until read_samples_async is about to start.
+        Wall time when async USB streaming was entered; 0 until read_bytes_async is about to start.
     spectrum_interval_s: float
         Interval (s of IQ samples) between spectrum messages with the noise and SNR of every frequency; <= 0 disables.
     """
@@ -391,7 +407,7 @@ class SignalAnalyzer(multiprocessing.Process):
         assert self._ring_count >= n
         r = self._ring_read
         cap = self._ring_capacity
-        out = np.empty(n, dtype=self._ring_buffer.dtype)
+        out = np.empty((n, *self._ring_buffer.shape[1:]), dtype=self._ring_buffer.dtype)
         first = min(n, cap - r)
         out[:first] = self._ring_buffer[r : r + first]
         if first < n:
@@ -400,8 +416,18 @@ class SignalAnalyzer(multiprocessing.Process):
         self._ring_count -= n
         return out
 
-    def _producer_enqueue(self, buffer: np.ndarray, context):
-        """RTL-SDR async callback: enqueue samples into the ring (minimal work)."""
+    def _producer_enqueue(self, buffer, context):
+        """
+        RTL-SDR async callback: copy the bytes into the ring (minimal work, it runs in the USB thread).
+
+        Parameters
+        ----------
+        buffer:
+            The bytes of the callback (interleaved I and Q), a ctypes array or a uint8 array.
+        context:
+            The context of the callback, unused.
+        """
+        buffer = np.ctypeslib.as_array(buffer).reshape(-1, 2)
         ts_recv = datetime.datetime.now()
         self._last_recv_wall = ts_recv
 
@@ -452,7 +478,8 @@ class SignalAnalyzer(multiprocessing.Process):
                     self._ring_cv.wait(timeout=0.5)
                 if self._consumer_stop.is_set() and self._ring_count < self.analysis_block_samples:
                     break
-                chunk = self._ring_pop(self.analysis_block_samples)
+                raw = self._ring_pop(self.analysis_block_samples)
+            chunk = iq_from_bytes(raw)
 
             if self._sample_clock_t0 is None:
                 self._sample_clock_t0 = datetime.datetime.now()
@@ -633,7 +660,8 @@ class SignalAnalyzer(multiprocessing.Process):
             self.sdr_callback_length,
         )
 
-        self._ring_buffer = np.empty(self._ring_capacity, dtype=np.complex64)
+        # the bytes of the SDR, one row of I and Q per sample, converted to IQ per analysis block
+        self._ring_buffer = np.empty((self._ring_capacity, 2), dtype=np.uint8)
         self._ring_read = 0
         self._ring_write = 0
         self._ring_count = 0
@@ -654,7 +682,7 @@ class SignalAnalyzer(multiprocessing.Process):
         self.streaming_ts.value = time.time()
 
         try:
-            self.sdr.read_samples_async(self._producer_enqueue, self.sdr_callback_length)
+            self.sdr.read_bytes_async(self._producer_enqueue, 2 * self.sdr_callback_length)
         except rtlsdr.rtlsdr.LibUSBError as err:
             # librtlsdr may report the cancellation of the transfers as error
             if not self._stop_requested:
