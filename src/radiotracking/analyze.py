@@ -162,6 +162,11 @@ class SignalAnalyzer(multiprocessing.Process):
         self.last_data_ts = last_data_ts
         self.streaming_ts = streaming_ts
 
+        # state shared with the signal handler, which may fire at any point of run(), e.g. while the SDR is still opening
+        self.sdr: Optional[rtlsdr.rtlsdr.RtlSdr] = None
+        self.last_state: Optional[StateMessage] = None
+        self._stop_requested = False
+
         self._spectrogram_last: None | np.ndarray = None
         self._last_recv_wall: datetime.datetime | None = None
 
@@ -400,9 +405,6 @@ class SignalAnalyzer(multiprocessing.Process):
         signal.signal(signal.SIGTERM, self.handle_signal)
         signal.signal(signal.SIGINT, self.handle_signal)
 
-        # initialize state
-        self.last_state = None
-
         # logging levels increase in steps of 10, start with warning
         logging_level = max(0, logging.WARN - (self.verbose * 10))
         logging.basicConfig(level=logging_level)
@@ -428,6 +430,12 @@ class SignalAnalyzer(multiprocessing.Process):
         except rtlsdr.rtlsdr.LibUSBError as err:
             logger.warning("SDR %s: could not open or configure (%s).", self.device, err)
             sys.exit(1)
+
+        # terminated while opening the device: do not start streaming
+        if self._stop_requested:
+            logger.warning("SDR %s: terminated during setup.", self.device)
+            sdr.close()
+            return
 
         try:
             if self.lna_gain not in range(0, 16):
@@ -553,6 +561,7 @@ class SignalAnalyzer(multiprocessing.Process):
         elif sig == signal.SIGINT:
             return
 
+        self._stop_requested = True
         self.update_state(datetime.datetime.now(), StateMessage.State.STOPPED)
         if self._consumer_stop is not None:
             self._consumer_stop.set()

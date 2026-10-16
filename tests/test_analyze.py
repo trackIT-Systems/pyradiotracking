@@ -228,15 +228,53 @@ class TestHandleSignal:
         an.handle_signal(signal.SIGINT, None)
         assert an.signal_queue.empty()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="self.sdr is only assigned after the SDR was opened, but the handlers are installed at the top of run(): a SIGTERM while opening the device (the hang case the watchdog handles) raises AttributeError",
-    )
     def test_sigterm_before_the_sdr_is_open(self):
         an = make_analyzer()
-        an.last_state = None
         an.handle_signal(signal.SIGTERM, None)
+        assert an._stop_requested
+        assert an.signal_queue.get_nowait().state is StateMessage.State.STOPPED
 
+    def test_sigalrm_before_the_sdr_is_open(self):
+        an = make_analyzer()
+        an.handle_signal(signal.SIGALRM, None)
+        assert an._stop_requested
+
+
+class TestRunTermination:
+    @pytest.fixture(autouse=True)
+    def restore_handlers(self):
+        old = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGALRM)}
+        yield
+        signal.alarm(0)
+        for s, h in old.items():
+            signal.signal(s, h)
+
+    def test_terminated_while_opening_the_device_does_not_start_streaming(self, monkeypatch):
+        import rtlsdr.rtlsdr
+
+        an = make_analyzer()
+        sdrs = []
+
+        class FakeSdr:
+            def __init__(self, index):
+                self.sample_rate = FS
+                self.closed = False
+                self.streamed = False
+                sdrs.append(self)
+                # the watchdog terminates the process while the device is being opened
+                an.handle_signal(signal.SIGTERM, None)
+
+            def close(self):
+                self.closed = True
+
+            def read_samples_async(self, *args):
+                self.streamed = True
+
+        monkeypatch.setattr(rtlsdr.rtlsdr, "RtlSdr", FakeSdr)
+        an.run()
+        assert sdrs[0].closed
+        assert not sdrs[0].streamed
+        assert an.streaming_ts.value == 0.0
 
 class TestShadowFilter:
     def test_louder_overlapping_signal_shadows(self, make_signal):
