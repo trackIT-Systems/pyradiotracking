@@ -274,9 +274,9 @@ class SignalAnalyzer(multiprocessing.Process):
     signal_queue: multiprocessing.Queue
         The multiprocessing queue to put the signals in.
     last_data_ts: multiprocessing.Value
-        The multiprocessing value to put the last data timestamp in.
+        ``time.monotonic()`` of the last USB callback, 0 before the first; read by the watchdog of the parent.
     streaming_ts: multiprocessing.Value
-        Wall time when async USB streaming was entered; 0 until read_bytes_async is about to start.
+        ``time.monotonic()`` when async USB streaming was entered; 0 until read_bytes_async is about to start.
     spectrum_interval_s: float
         Interval (s of IQ samples) between spectrum messages with the noise and SNR of every frequency; <= 0 disables.
     """
@@ -490,8 +490,9 @@ class SignalAnalyzer(multiprocessing.Process):
             self.update_state(datetime.datetime.now(), StateMessage.State.STARTED)
         else:
             self.update_state(ts_recv, StateMessage.State.RUNNING)
-        self.last_data_ts.value = datetime.datetime.timestamp(ts_recv)
-        logger.info("SDR %s received data at %s", self.device, self.last_data_ts.value)
+        # monotonic: the watchdog must not be affected by steps of the wall clock (e.g. by NTP)
+        self.last_data_ts.value = time.monotonic()
+        logger.info("SDR %s received data at %s", self.device, ts_recv)
 
         assert self._ring_cv is not None
         assert self._consumer_stop is not None
@@ -729,7 +730,7 @@ class SignalAnalyzer(multiprocessing.Process):
 
         signal.signal(signal.SIGALRM, self.handle_signal)
         signal.alarm(self.sdr_timeout_s)
-        self.streaming_ts.value = time.time()
+        self.streaming_ts.value = time.monotonic()
 
         try:
             self.sdr.read_bytes_async(self._producer_enqueue, 2 * self.sdr_callback_length)

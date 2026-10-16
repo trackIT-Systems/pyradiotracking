@@ -51,6 +51,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 - A SIGTERM or SIGALRM while the SDR is still opening raised `AttributeError` in the analyzer process; it now stops cleanly without starting to stream
 - Matched signals are published after the matching timeout while idle and on shutdown, they were only published when a later signal arrived, so the last detections before a quiet period (or shutdown) were lost
 - The `[optional arguments]` section (`verbose`, `calibrate`, `station`, `schedule`, `config`) was ignored since Python 3.10, which names the group `[options]`. Config files are now read with either section name, if both are present `[options]` wins; written configs use the name of the running Python
+- The watchdog of the SDRs used the wall clock: a step of the clock (e.g. NTP correcting a station without RTC) restarted all SDRs (forward) or paused the watchdog (backward). It uses the monotonic clock now
 
 ### Removed
 

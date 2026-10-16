@@ -189,7 +189,7 @@ class Runner:
             streaming_ts=streaming_ts,
             **vars(dargs),
         )
-        analyzer.started_at = time.time()
+        analyzer.started_at = time.monotonic()
         analyzer.start()
 
         if not self.args.sdr_dynamic_scheduling:
@@ -217,15 +217,12 @@ class Runner:
         # Never block here: shutdown may run from a signal handler on the main thread, and
         # multiprocessing.Queue is not re-entrant — a blocking put can deadlock if SIGINT
         # arrives and tries to shut down again while still inside put().
+        # the time of the last data, converted from the monotonic clock of the watchdog
+        ts = datetime.datetime.now().astimezone()
+        if analyzer.last_data_ts.value:
+            ts -= datetime.timedelta(seconds=max(0.0, time.monotonic() - analyzer.last_data_ts.value))
         try:
-            analyzer.signal_queue.put(
-                StateMessage(
-                    analyzer.device,
-                    datetime.datetime.fromtimestamp(analyzer.last_data_ts.value).astimezone(),
-                    StateMessage.State.STOPPED,
-                ),
-                block=False,
-            )
+            analyzer.signal_queue.put(StateMessage(analyzer.device, ts, StateMessage.State.STOPPED), block=False)
         except queue.Full:
             logger.warning(
                 "SDR %s: signal queue is full; could not enqueue STOPPED state before shutdown.",
@@ -283,8 +280,9 @@ class Runner:
         """
         Check if all analyzer threads are still running.
         """
-        now = datetime.datetime.now()
-        now_ts = datetime.datetime.timestamp(now)
+        # monotonic, like the timestamps of the analyzers: steps of the wall clock (e.g. by NTP) must neither restart all
+        # SDRs nor pause the watchdog
+        now_ts = time.monotonic()
 
         # iterate the analyzer copy to allow for altering (restarting) analyzers
         for analyzer in self.analyzers.copy():
@@ -310,13 +308,11 @@ class Runner:
                         analyzer.device,
                     )
                 elif last_data_ts > now_ts - analyzer.sdr_timeout_s:
-                    logger.info(
-                        f"SDR {analyzer.device} received last data {datetime.datetime.fromtimestamp(last_data_ts)}"
-                    )
+                    logger.info("SDR %s received last data %.3f s ago", analyzer.device, now_ts - last_data_ts)
                     continue
                 else:
                     logger.warning(
-                        f"SDR {analyzer.device} received last data {datetime.datetime.fromtimestamp(last_data_ts)}; timed out."
+                        "SDR %s received last data %.3f s ago; timed out.", analyzer.device, now_ts - last_data_ts
                     )
 
                 # kill timed out analyzer
@@ -429,16 +425,16 @@ class Runner:
 
         self.start_analyzers()
 
-        next_check = datetime.datetime.now()
+        next_check = time.monotonic()
         while self.running:
             # check if everything is working
-            if next_check < datetime.datetime.now():
+            if next_check < time.monotonic():
                 self.check_analyzers()
-                next_check += datetime.timedelta(seconds=1)
+                next_check += 1.0
 
             # do a connector step with remaining time (check for queued signals)
             # while idle, publish matches that can not be completed any more
-            if not self.connector.step(next_check - datetime.datetime.now()):
+            if not self.connector.step(datetime.timedelta(seconds=next_check - time.monotonic())):
                 self.matcher.flush()
 
         logger.info("Exit main loop")

@@ -5,6 +5,7 @@ import queue
 import signal
 import socket
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -43,7 +44,7 @@ class FakeAnalyzer:
         self.sdr_timeout_s = timeout
         self.streaming_ts = FakeValue(streaming_ts)
         self.last_data_ts = FakeValue(last_data_ts)
-        self.started_at = datetime.datetime.now().timestamp() if started_at is None else started_at
+        self.started_at = time.monotonic() if started_at is None else started_at
         self.signal_queue = queue.Queue()
         self.alive = alive
         self.exitcode = None if alive else 0
@@ -156,7 +157,26 @@ class TestCheckAnalyzers:
         return r
 
     def now(self):
-        return datetime.datetime.now().timestamp()
+        return time.monotonic()
+
+    def test_wall_clock_steps_do_not_affect_the_watchdog(self, runner, monkeypatch):
+        # e.g. NTP setting the clock of a station without RTC an hour ahead, or back
+        a = FakeAnalyzer(streaming_ts=self.now() - 10, last_data_ts=self.now())
+        runner.analyzers = [a]
+        for step in (3600, -3600):
+            monkeypatch.setattr(rt_main.time, "time", lambda step=step: time.monotonic() + 1e9 + step)
+            runner.check_analyzers()
+        assert runner.analyzers == [a]
+        assert not a.terminated
+
+    def test_stopped_state_has_the_time_of_the_last_data(self, runner):
+        a = FakeAnalyzer(streaming_ts=self.now() - 60, last_data_ts=self.now() - 30)
+        runner.analyzers = [a]
+        runner.check_analyzers()
+        stopped = a.signal_queue.get_nowait()
+        assert stopped.state is StateMessage.State.STOPPED
+        age = (datetime.datetime.now().astimezone() - stopped.ts).total_seconds()
+        assert age == pytest.approx(30, abs=1)
 
     def test_healthy_analyzer_is_left_alone(self, runner):
         a = FakeAnalyzer(streaming_ts=self.now() - 10, last_data_ts=self.now())
