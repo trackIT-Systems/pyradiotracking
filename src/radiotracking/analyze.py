@@ -11,6 +11,7 @@ from typing import List, Optional, Union
 
 import numpy as np
 import rtlsdr
+import scipy.fft
 import scipy.signal
 
 from radiotracking import Signal, SpectrumMessage, StateMessage, dB, from_dB
@@ -51,7 +52,57 @@ def noise_levels(spectrogram: np.ndarray) -> np.ndarray:
     spectrogram: np.ndarray
         2d spectrogram data, frequencies by time.
     """
-    return np.median(spectrogram, axis=1) / LN2
+    # the same values as np.median(spectrogram, axis=1): the middle element, or the mean of the two middle elements;
+    # partitioned in the memory order of scipy's spectrogram (time by frequencies), which is faster
+    by_time = np.ascontiguousarray(spectrogram.T)
+    k = by_time.shape[0] // 2
+    if by_time.shape[0] % 2:
+        return np.partition(by_time, k, axis=0)[k] / LN2
+    middle = np.partition(by_time, [k - 1, k], axis=0)
+    return np.mean(middle[k - 1 : k + 1], axis=0) / LN2
+
+
+def spectrogram_of(
+    chunk: np.ndarray, sample_rate: float, window: np.ndarray, scale: complex
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Power spectral density of consecutive segments of IQ samples, as ``scipy.signal.spectrogram`` computes it.
+
+    The same operations as scipy (``noverlap=0``, ``return_onesided=False``, ``detrend='constant'``, density scaling), so
+    the values are identical, without scipy's input validation and window computation per call.
+
+    Parameters
+    ----------
+    chunk: np.ndarray
+        complex64 IQ samples, a multiple of the segment length
+    sample_rate: float
+        sample rate (Hz)
+    window: np.ndarray
+        complex64 window of the segment length, see :func:`spectrogram_window`
+    scale: complex
+        density scaling of the window, see :func:`spectrogram_window`
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+        Frequencies (Hz, scipy order 0, positive, negative), segment centers (s) and the spectrogram (frequencies by
+        time, a view in scipy's memory order).
+    """
+    nperseg = len(window)
+    segments = chunk.reshape(-1, nperseg)
+    segments = segments - np.mean(segments, axis=-1, keepdims=True)
+    result = scipy.fft.fft(window * segments, n=nperseg)
+    result = np.conjugate(result) * result
+    result *= scale
+    freqs = scipy.fft.fftfreq(nperseg, 1 / sample_rate)
+    times = np.arange(nperseg / 2, len(chunk) - nperseg / 2 + 1, nperseg) / float(sample_rate)
+    return freqs, times, result.real.T
+
+
+def spectrogram_window(window, nperseg: int, sample_rate: float) -> tuple[np.ndarray, complex]:
+    """The window (as scipy casts it for complex64 input) and the density scaling for :func:`spectrogram_of`."""
+    win = scipy.signal.get_window(window, nperseg).astype(np.complex64)
+    return win, 1.0 / (sample_rate * (win * win).sum())
 
 DEFAULT_ANALYSIS_BLOCK_S = 0.3
 """Duration of IQ per analysis block if ``analysis_block_samples`` is not configured."""
@@ -316,6 +367,8 @@ class SignalAnalyzer(multiprocessing.Process):
         self._stop_requested = False
 
         self._spectrogram_last: None | np.ndarray = None
+        self._window: Optional[tuple[np.ndarray, complex]] = None
+        self._window_rate: float = 0.0
         self._last_recv_wall: datetime.datetime | None = None
 
         self.analysis_block_samples: int = 0
@@ -438,7 +491,7 @@ class SignalAnalyzer(multiprocessing.Process):
         else:
             self.update_state(ts_recv, StateMessage.State.RUNNING)
         self.last_data_ts.value = datetime.datetime.timestamp(ts_recv)
-        logger.info(f"SDR {self.device} received data at {self.last_data_ts.value}")
+        logger.info("SDR %s received data at %s", self.device, self.last_data_ts.value)
 
         assert self._ring_cv is not None
         assert self._consumer_stop is not None
@@ -531,14 +584,11 @@ class SignalAnalyzer(multiprocessing.Process):
             The number of published signals, of signals before the shadow filter, and the time (s) of every stage.
         """
         bench_start = time.perf_counter()
-        freqs, times, spectrogram = scipy.signal.spectrogram(
-            chunk,
-            fs=self.sample_rate,
-            window=self.fft_window,
-            nperseg=self.fft_nperseg,
-            noverlap=0,
-            return_onesided=False,
-        )
+        # the window depends on the sample rate, which the hardware may adjust after the analyzer was created
+        if self._window is None or self._window_rate != self.sample_rate:
+            self._window = spectrogram_window(self.fft_window, self.fft_nperseg, self.sample_rate)
+            self._window_rate = self.sample_rate
+        freqs, times, spectrogram = spectrogram_of(chunk, self.sample_rate, *self._window)
         bench_spectrogram = time.perf_counter()
 
         noise = noise_levels(spectrogram)
@@ -824,7 +874,7 @@ class SignalAnalyzer(multiprocessing.Process):
         signal: radiotracking.Signal
             The signal to put into the signal queue.
         """
-        logger.debug(f"SDR {self.device} received {signal}")
+        logger.debug("SDR %s received %s", self.device, signal)
         self.signal_queue.put(signal)
 
     @staticmethod
@@ -871,7 +921,7 @@ class SignalAnalyzer(multiprocessing.Process):
         """
 
         signals_status = [SignalAnalyzer.is_shadow_of(sig, signals) for sig in signals]
-        logger.debug(f"shadow list: {signals_status}")
+        logger.debug("shadow list: %s", signals_status)
 
         return [sig for sig, shadow in zip(signals, signals_status) if shadow is None]
 

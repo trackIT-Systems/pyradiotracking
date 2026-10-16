@@ -22,6 +22,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 - Values of the config file are converted to the option's type (e.g. `device = [0]` is `['0']`, `center_freq = 150.1e6` is an int); a value that is not a python literal or of the wrong type (e.g. `sdr_timeout_s = 2.5`) exits with a message naming the option
 - Signals are searched vectorized over all frequencies instead of per frequency in Python, and shadows are dropped before signals are created. The signals are identical (checked against the former search on 2.2 million signals of recorded IQ), the search takes 1.7 instead of 14 ms per block at 1.2 MHz with 1024 bins on a Pi 5, and a close tag leaking into all frequencies no longer creates hundreds of signals per block
 - The SDR callback only copies the bytes of the SDR into the sample ring (2 bytes per sample instead of 8), they are converted to IQ per analysis block with float32 arithmetic giving exactly pyrtlsdr's values. The USB thread no longer converts samples to complex128, and the conversion takes 1.5 instead of 4.6 ms per block at 1.2 MHz on a Pi 5
+- The spectrogram and the noise level per frequency are computed with the operations of `scipy.signal.spectrogram` and `np.median` (bit-identical, checked by tests), but in the memory order of the spectrogram and without scipy's per-call window computation: 15.7 instead of 17.9 ms per block at 1.2 MHz on a Pi 5
 
 ### Added
 

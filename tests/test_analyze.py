@@ -975,3 +975,41 @@ class TestBytes:
             signal.alarm(0)
         assert an._ring_count == 256
         assert an._ring_pop(2).tolist() == [[0, 1], [2, 3]]
+
+
+class TestExactShortcuts:
+    """Faster forms of scipy's spectrogram and np.median, which must give identical values."""
+
+    @pytest.mark.parametrize("window", ["hamming", "hann", "blackmanharris", ("kaiser", 8.0), "boxcar"])
+    @pytest.mark.parametrize("sample_rate,nperseg", [(FS, 256), (1_200_000, 1024), (250_000, 100), (FS, 1)])
+    def test_spectrogram_equals_scipy(self, window, sample_rate, nperseg):
+        from radiotracking.analyze import spectrogram_of, spectrogram_window
+
+        rng = np.random.default_rng(3)
+        n = 40 * nperseg
+        iq = (1e-2 * (rng.standard_normal(n) + 1j * rng.standard_normal(n))).astype(np.complex64)
+        iq += (0.5 * np.exp(2j * np.pi * 0.2 * np.arange(n))).astype(np.complex64)
+        expected = scipy.signal.spectrogram(
+            iq, fs=sample_rate, window=window, nperseg=nperseg, noverlap=0, return_onesided=False
+        )
+        actual = spectrogram_of(iq, sample_rate, *spectrogram_window(window, nperseg, sample_rate))
+        for e, a in zip(expected, actual):
+            assert a.dtype == e.dtype
+            assert np.array_equal(a, e)
+
+    @pytest.mark.parametrize("segments", [352, 351, 1, 2])
+    def test_noise_levels_equal_the_median(self, segments):
+        from radiotracking.analyze import LN2, noise_levels
+
+        rng = np.random.default_rng(segments)
+        spec = rng.exponential(1e-10, size=(segments, 64)).astype(np.float32).T  # scipy's memory order
+        assert np.array_equal(noise_levels(spec), np.median(spec, axis=1) / LN2)
+
+    def test_window_follows_the_sample_rate(self):
+        an = make_analyzer(sample_rate=250_000)
+        an._analyze_block(burst_iq(30208, 0.0, 0.0, fs=250_000), T0)
+        first = an._window
+        an.sample_rate = FS
+        an._analyze_block(burst_iq(30208, 0.0, 0.0), T0)
+        assert an._window_rate == FS
+        assert an._window[1] != first[1]
