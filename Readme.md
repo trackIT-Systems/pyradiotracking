@@ -1,158 +1,70 @@
-pyradiotracking
-===
+# pyradiotracking
 
-Detect signals of wildlife tracking systems with RTL SDR devices.
+[![Latest version](https://img.shields.io/github/v/tag/trackIT-Systems/pyradiotracking?sort=semver&label=version)](https://github.com/trackIT-Systems/pyradiotracking/tags)
+[![Tests](https://github.com/trackIT-Systems/pyradiotracking/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/trackIT-Systems/pyradiotracking/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue)](pyproject.toml)
+[![License](https://img.shields.io/badge/license-GPL--3.0-green)](LICENSE)
 
-### Installation
+Detect the signals of VHF wildlife tracking transmitters with RTL-SDR receivers. radiotracking is the signal detection of the trackIT vhf:tracker stations (tsOS-vhf), but it runs on any Linux machine with one or more RTL-SDRs.
 
-radiotracking requires Python 3.12, 3.13 or 3.14 and [librtlsdr](https://github.com/trackIT-Systems/librtlsdr) (via [pyrtlsdr](https://github.com/pyrtlsdr/pyrtlsdr)).
+## How it works
 
-```bash
-$ pip install .
-```
+Every SDR runs in its own process:
 
-### Usage
+1. The SDR delivers IQ samples in USB callbacks, which only copy them into a ring buffer.
+2. An analysis thread computes a spectrogram of each analysis block (0.3 s by default, segments of `fft_nperseg` samples).
+3. In each frequency bin, a signal is a run of segments above `signal_threshold_dbw` and `snr_threshold_db` over the noise level, lasting `signal_min_duration_ms` to `signal_max_duration_ms`. The noise level is the median power of the bin over the block, so it is not raised by the signal itself. Signals may span two blocks.
+4. Weaker signals overlapping in time with a stronger one (spectral leakage into neighbouring bins) are dropped as shadows.
 
-An example configuration with all options is provided in [etc/radiotracking.ini](etc/radiotracking.ini). Command line options override values from the configuration file.
+The main process collects the signals of all SDRs, groups detections of the same transmission on several SDRs into matched signals, watches and restarts stalled SDRs, and publishes everything.
 
-```bash
-$ radiotracking --config etc/radiotracking.ini --csv --path data
-$ radiotracking -h
-usage: radiotracking [-h] [-v] [--calibrate] [--config CONFIG] [--station STATION] [-d [DEVICE ...]] [-c [CALIBRATION ...]] [-f CENTER_FREQ]
-                     [-s SAMPLE_RATE] [-b SDR_CALLBACK_LENGTH] [-g GAIN] [--lna-gain LNA_GAIN] [--mixer-gain MIXER_GAIN] [--vga-gain VGA_GAIN]
-                     [--tuner-bandwidth TUNER_BANDWIDTH] [--sdr-max-restart SDR_MAX_RESTART] [--sdr-timeout-s SDR_TIMEOUT_S]
-                     [--sdr-dynamic-scheduling] [--state-update-s STATE_UPDATE_S] [--status-interval STATUS_INTERVAL] [-n FFT_NPERSEG]
-                     [-w FFT_WINDOW] [-t SIGNAL_THRESHOLD_DBW] [-r SNR_THRESHOLD_DB] [-l SIGNAL_MIN_DURATION_MS] [-u SIGNAL_MAX_DURATION_MS]
-                     [--analysis-block-samples ANALYSIS_BLOCK_SAMPLES] [--matching-timeout-s MATCHING_TIMEOUT_S] [-mt MATCHING_TIME_DIFF_S]
-                     [-mb MATCHING_BANDWIDTH_HZ] [-md MATCHING_DURATION_DIFF_MS] [--sig-stdout] [--match-stdout] [--path PATH] [--csv]
-                     [--export-config] [--mqtt] [--mqtt-host MQTT_HOST] [--mqtt-port MQTT_PORT] [--mqtt-qos MQTT_QOS]
-                     [--mqtt-keepalive MQTT_KEEPALIVE] [-mv]
+## Installation
 
-Detect signals of wildlife tracking systems with RTL SDR devices
-
-options:
-  -h, --help            show this help message and exit
-  -v, --verbose         increase output verbosity (default: 0)
-  --calibrate           enable calibration mode (default: False)
-  --config CONFIG       configuration file (default: etc/radiotracking.ini)
-  --station STATION     name of the station (default: <hostname>)
-
-rtl-sdr:
-  -d, --device [DEVICE ...]
-                        device indexes or names (default: ['0'])
-  -c, --calibration [CALIBRATION ...]
-                        device calibration gain (dB) (default: [])
-  -f, --center-freq CENTER_FREQ
-                        center frequency to tune to (Hz) (default: 150150000)
-  -s, --sample-rate SAMPLE_RATE
-                        sample rate (Hz) (default: 300000)
-  -b, --sdr-callback-length SDR_CALLBACK_LENGTH
-                        number of samples to read per batch (default: None)
-  -g, --gain GAIN       gain, supported levels 0.0 - 49.6 (default: 49.6)
-  --lna-gain LNA_GAIN   lna_gain index in 0 .. 15 (default: 15)
-  --mixer-gain MIXER_GAIN
-                        mixer_gain index in 0 .. 15 (default: 14)
-  --vga-gain VGA_GAIN   vga_gain index in 0 .. 15 (default: 15)
-  --tuner-bandwidth TUNER_BANDWIDTH
-                        R820T2 IF filter bandwidth (Hz); 0 = default (2 * sample-rate) (default: 0)
-  --sdr-max-restart SDR_MAX_RESTART
-                        maximal restart count per SDR device (default: 3)
-  --sdr-timeout-s SDR_TIMEOUT_S
-                        Stall timeout (s) for SIGALRM/parent watchdog; also caps IQ ring size at sample_rate*timeout samples (default: 2)
-  --sdr-dynamic-scheduling
-                        allow the OS to schedule SDR processes freely (default: pin each SDR to a CPU, device index modulo ncpu) (default: False)
-  --state-update-s STATE_UPDATE_S
-                        interval in which state update messages should be recorded (s) (default: 300)
-  --status-interval STATUS_INTERVAL
-                        interval for publishing aggregated spectrogram metrics in state messages (s); <=0 disables (default: 60.0)
-
-analysis:
-  -n, --fft-nperseg FFT_NPERSEG
-                        fft number of samples (default: 256)
-  -w, --fft-window FFT_WINDOW
-                        fft window function (default: 'hamming')
-  -t, --signal-threshold-dbw SIGNAL_THRESHOLD_DBW
-                        lower limit for signal intensity (dBW) (default: -90.0)
-  -r, --snr-threshold-db SNR_THRESHOLD_DB
-                        lower limit for signal-to-noise ratio (dB) (default: 5.0)
-  -l, --signal-min-duration-ms SIGNAL_MIN_DURATION_MS
-                        lower limit for signal duration (ms) (default: 8)
-  -u, --signal-max-duration-ms SIGNAL_MAX_DURATION_MS
-                        upper limit for signal duration (ms) (default: 50)
-  --analysis-block-samples ANALYSIS_BLOCK_SAMPLES
-                        IQ samples per spectrogram/detection chunk (default: 0.3 s at sample_rate, aligned to fft_nperseg) (default: None)
-
-matching:
-  --matching-timeout-s MATCHING_TIMEOUT_S
-                        timeout for adding signals to a match group (default: 2.0)
-  -mt, --matching-time-diff-s MATCHING_TIME_DIFF_S
-                        error margin for timestamp matching (s) (default: 0)
-  -mb, --matching-bandwidth-hz MATCHING_BANDWIDTH_HZ
-                        error margin for frequency (Hz) (default: 0)
-  -md, --matching-duration-diff-ms MATCHING_DURATION_DIFF_MS
-                        error margin for duration (ms) (default: None)
-
-publish:
-  --sig-stdout          enable stdout signal publishing (default: False)
-  --match-stdout        enable stdout matched signals publishing (default: False)
-  --path PATH           file output path (default: data)
-  --csv                 enable csv data publishing (default: False)
-  --export-config       export configuration (default: False)
-  --mqtt                enable mqtt data publishing (default: False)
-  --mqtt-host MQTT_HOST
-                        hostname of mqtt broker (default: localhost)
-  --mqtt-port MQTT_PORT
-                        port of mqtt broker (default: 1883)
-  --mqtt-qos MQTT_QOS   mqtt quality of service level (0, 1, 2) (default: 1)
-  --mqtt-keepalive MQTT_KEEPALIVE
-                        timeout for mqtt connection (s) (default: 3600)
-```
-
-### Development
+radiotracking needs Python 3.12, 3.13 or 3.14 and librtlsdr. The [trackIT fork of librtlsdr](https://github.com/trackIT-Systems/librtlsdr) is recommended: it provides `rtlsdr_set_tuner_gain_ext` for setting the LNA, mixer and VGA gain stages of the R820T tuner separately. With another librtlsdr, the single `gain` value is used.
 
 ```bash
-$ pip install -e . pytest
-$ pytest
+pip install .
 ```
 
-The tests run without an SDR and without librtlsdr (a stand-in for `rtlsdr` is used if the library is missing). Tests marked `xfail` document known defects; they are strict, so fixing a defect makes the test fail until its marker is removed.
+## Running
 
-### Versioning
-
-radiotracking follows [Semantic Versioning](https://semver.org/). Releases are tagged as `MAJOR.MINOR.PATCH`, notable changes are documented in the [changelog](CHANGELOG.md). While the major version is 0, minor releases may contain breaking changes.
-
-### Troubleshooting
-
-#### Failed to allocate zero-copy buffer
-
-The size of zero-copy kernel buffers is limited.
-
+```bash
+radiotracking --config etc/radiotracking.ini
 ```
-Failed to allocate zero-copy buffer for transfer 5
-Falling back to buffers in userspace
-Failed to submit transfer 6
-Please increase your allowed usbfs buffer size with the following command:
-echo 0 > /sys/module/usbcore/parameters/usbfs_memory_mb
+
+[etc/radiotracking.ini](etc/radiotracking.ini) lists all options with their defaults, `radiotracking -h` describes them. Command line arguments override the config file. Values in the config file are Python literals, e.g. `station = 'name'` and `device = ['0', '1']`.
+
+Signals are published to:
+
+- **CSV files** (`--csv`) in `<path>/<hostname>/radiotracking/`: `<station>_<start time>.csv` for signals, plus `-matched.csv` and `-state.csv`.
+- **MQTT** (`--mqtt`), as JSON, CSV and CBOR: `<station>/radiotracking/device/<device>/…` for the signals of each SDR, `…/matched/…` for matched signals and `…/state/…` for SDR states and spectrum statistics.
+- **stdout** (`--sig-stdout`, `--match-stdout`), as CSV.
+
+## Development
+
+```bash
+pip install -e . pytest pytest-cov
+pytest --cov=radiotracking
 ```
-For larger buffers, as preferable for high sampling rates in terms of effificiency, the usbfs memory limit can be removed:
 
-`echo 0 | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb`
+The tests need neither an SDR nor librtlsdr: if librtlsdr is missing, a stand-in for `rtlsdr` is used. Tests marked `xfail` document known defects. They are strict, so fixing a defect makes its test fail until the marker is removed.
 
-#### Sample buffer, timestamps, and stalls
+GitHub Actions run the tests on every push to `main`: with Python 3.12, 3.13 and 3.14 on the latest dependencies, and with Python 3.13 on the minimum versions (those of Debian 13, which the stations run). The coverage report is shown in the summary of each run.
 
-USB/async callbacks only copy IQ into an internal ring buffer (capacity `sample_rate * sdr_timeout_s` samples). A separate thread runs the spectrogram and detection on fixed **analysis** blocks (`analysis_block_samples`, default **0.3 s** of IQ at `sample_rate`, rounded up to a multiple of `fft_nperseg`). This decouples `sdr_callback_length` (USB transfer size) from the FFT block size.
+## Versioning
 
-#### Signal detection and the analysis block
+radiotracking follows [Semantic Versioning](https://semver.org/). Releases are tagged `MAJOR.MINOR.PATCH`, and notable changes are listed in the [changelog](CHANGELOG.md). While the major version is 0, minor releases may contain breaking changes.
 
-A signal is detected if the power of a frequency bin stays above `signal_threshold_dbw` and `snr_threshold_db` over the noise level for `signal_min_duration_ms` to `signal_max_duration_ms`. The noise level of each frequency is the **median** of its power over the analysis block (divided by ln 2, which makes it the mean noise power), so it is not raised by the signal itself, and a changing noise floor across the band is accounted for.
+## Troubleshooting
 
-A signal has to end in the block it is analysed in, and it can start at most one block earlier. The block therefore has to be considerably longer than the longest signal, otherwise long signals need a higher SNR to be detected or are not detected at all. radiotracking logs a warning at startup if `analysis_block_samples` (explicitly configured or the default) is shorter than **6 times `signal_max_duration_ms`**; the defaults, 0.3 s and 50 ms, meet this exactly. The default block, the segment duration (`fft_nperseg / sample_rate`) and the bin width (`sample_rate / fft_nperseg`) are defined in time, so a wider band (e.g. `sample_rate = 1200000`) works with the same settings if `fft_nperseg` is scaled along (`1024`).
+**"Failed to allocate zero-copy buffer"**: the kernel limits the memory for USB buffers. Remove the limit with
 
-Signal timestamps follow a **sample-count timeline** (wall time anchors the first consumed chunk; later chunk starts advance by `samples / sample_rate`). Stall detection uses wall time: child `SIGALRM` / `sdr_timeout_s` after USB callbacks begin, and the parent watchdog if no USB callbacks arrive (startup grace while opening the dongle, then `sdr_timeout_s` after async read starts). Child `SIGALRM` cannot interrupt a hang inside libusb; the parent then `SIGTERM`s and `SIGKILL`s the child.
+```bash
+echo 0 | sudo tee /sys/module/usbcore/parameters/usbfs_memory_mb
+```
 
-If the ring fills (analysis cannot keep up), the analyzer stops and the normal per-device restart logic applies. Avoid overload with less expensive analysis settings, or increase `sdr_timeout_s` only if you accept a larger ring backlog.
+**Long signals are not detected**: a signal must end in the block it is analysed in and start at most one block earlier, and it raises the noise level of its block. radiotracking warns at startup if the analysis block is shorter than 6 times `signal_max_duration_ms`; increase `analysis_block_samples` in that case.
 
+**An SDR keeps restarting**: it is restarted if no samples arrive for `sdr_timeout_s`, or if the analysis cannot keep up and the ring buffer overflows. After `sdr_max_restart` restarts, radiotracking terminates. Check the USB connection and power supply, and the log for the reason.
 
-### Caveats
-
-- The sample rate of RTL-SDR is [limited to certain numbers](https://github.com/osmocom/rtl-sdr/blob/0847e93e0869feab50fd27c7afeb85d78ca04631/src/librtlsdr.c#L1103-L1108) in 225 kHz - 3.2 GHz, excluding 300 kHz - 900 kHz.
+**The sample rate is adjusted**: RTL-SDRs support [225–300 kHz and 900 kHz–3.2 MHz](https://github.com/osmocom/rtl-sdr/blob/0847e93e0869feab50fd27c7afeb85d78ca04631/src/librtlsdr.c#L1103-L1108). The rate actually set by the device is used for the analysis.
