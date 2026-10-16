@@ -162,6 +162,26 @@ class TestMQTTConsumer:
         consumer.add(object())  # type: ignore[arg-type]
         client.publish.assert_not_called()
 
+    def test_publishing_does_not_wait_for_the_broker(self, client, consumer, make_signal):
+        consumer.add(make_signal())
+        assert client.publish.call_count == 3
+        client.publish.return_value.wait_for_publish.assert_not_called()
+
+    def test_queue_is_bounded(self, client, consumer):
+        from radiotracking.consume import MQTT_MAX_QUEUED_MESSAGES
+
+        client.max_queued_messages_set.assert_called_once_with(MQTT_MAX_QUEUED_MESSAGES)
+
+    def test_shutdown_waits_for_the_last_message_bounded(self, client, consumer, make_signal):
+        consumer.add(make_signal())
+        consumer.shutdown()
+        client.publish.return_value.wait_for_publish.assert_called_once_with(timeout=2.0)
+        client.loop_stop.assert_called_once()
+
+    def test_shutdown_without_messages_does_not_wait(self, client, consumer):
+        consumer.shutdown()
+        client.publish.return_value.wait_for_publish.assert_not_called()
+
     def test_publish_errors_do_not_propagate(self, client, consumer, make_signal):
         client.publish.side_effect = OSError("broker gone")
         consumer.add(make_signal())

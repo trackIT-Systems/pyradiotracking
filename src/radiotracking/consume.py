@@ -10,7 +10,7 @@ import socket
 import sys
 from abc import ABC, abstractmethod
 from io import StringIO
-from typing import List, Type
+from typing import List, Optional, Type
 
 import cbor2 as cbor
 import paho.mqtt.client
@@ -18,6 +18,9 @@ import paho.mqtt.client
 from radiotracking import AbstractMessage, MatchingSignal, Signal, SpectrumMessage, StateMessage
 
 logger = logging.getLogger(__name__)
+
+MQTT_MAX_QUEUED_MESSAGES = 10_000
+"""Messages paho keeps while the broker is unreachable (about 3 per signal), see :class:`MQTTConsumer`."""
 
 
 def jsonify(o):
@@ -97,14 +100,17 @@ class MQTTConsumer(AbstractConsumer):
         self.prefix = prefix
         self.mqtt_qos = mqtt_qos
         self._shutdown = False
-        # Bound time spent in the broker on each publish so a hung broker cannot
-        # block the main process (signal handling, SDR watchdog joins, clean exit).
-        self._publish_timeout_s = 2.0
+        # Publishing does not wait for the broker, paho's network thread sends the queued messages. Only on shutdown
+        # the last message is waited for, bounded so a hung broker cannot block the clean exit.
+        self._shutdown_timeout_s = 2.0
+        self._last_publish: Optional[paho.mqtt.client.MQTTMessageInfo] = None
         self.client = paho.mqtt.client.Client(
             callback_api_version=paho.mqtt.client.CallbackAPIVersion.VERSION2,
             client_id=f"{platform.node()}-radiotracking",
             clean_session=False,
         )
+        # bounds the memory while the broker is unreachable, newer messages are dropped beyond it
+        self.client.max_queued_messages_set(MQTT_MAX_QUEUED_MESSAGES)
         self.client.connect(mqtt_host, mqtt_port, keepalive=mqtt_keepalive)
         self.client.loop_start()
 
@@ -120,6 +126,11 @@ class MQTTConsumer(AbstractConsumer):
             return
         self._shutdown = True
         try:
+            if self._last_publish is not None:
+                self._last_publish.wait_for_publish(timeout=self._shutdown_timeout_s)
+        except Exception:
+            pass
+        try:
             self.client.loop_stop()
         except Exception:
             pass
@@ -133,8 +144,7 @@ class MQTTConsumer(AbstractConsumer):
             return
         qos = self.mqtt_qos if qos is None else qos
         try:
-            info = self.client.publish(topic, payload, qos=qos)
-            info.wait_for_publish(timeout=self._publish_timeout_s)
+            self._last_publish = self.client.publish(topic, payload, qos=qos)
         except Exception:
             return
 

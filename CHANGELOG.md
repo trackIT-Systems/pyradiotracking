@@ -23,6 +23,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 - Signals are searched vectorized over all frequencies instead of per frequency in Python, and shadows are dropped before signals are created. The signals are identical (checked against the former search on 2.2 million signals of recorded IQ), the search takes 1.7 instead of 14 ms per block at 1.2 MHz with 1024 bins on a Pi 5, and a close tag leaking into all frequencies no longer creates hundreds of signals per block
 - The SDR callback only copies the bytes of the SDR into the sample ring (2 bytes per sample instead of 8), they are converted to IQ per analysis block with float32 arithmetic giving exactly pyrtlsdr's values. The USB thread no longer converts samples to complex128, and the conversion takes 1.5 instead of 4.6 ms per block at 1.2 MHz on a Pi 5
 - The spectrogram and the noise level per frequency are computed with the operations of `scipy.signal.spectrogram` and `np.median` (bit-identical, checked by tests), but in the memory order of the spectrogram and without scipy's per-call window computation: 15.7 instead of 17.9 ms per block at 1.2 MHz on a Pi 5
+- MQTT messages are published without waiting for the broker: every publish waited for its acknowledgement (up to 2 s), three per signal and per match, which serialized the main process on broker round trips. paho's queue is limited to 10000 messages while the broker is unreachable, and the last message is waited for (up to 2 s) on shutdown
 
 ### Added
 
