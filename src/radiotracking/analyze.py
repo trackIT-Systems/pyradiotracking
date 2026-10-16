@@ -57,9 +57,14 @@ def noise_levels(spectrogram: np.ndarray) -> np.ndarray:
     by_time = np.ascontiguousarray(spectrogram.T)
     k = by_time.shape[0] // 2
     if by_time.shape[0] % 2:
-        return np.partition(by_time, k, axis=0)[k] / LN2
-    middle = np.partition(by_time, [k - 1, k], axis=0)
-    return np.mean(middle[k - 1 : k + 1], axis=0) / LN2
+        noise = np.partition(by_time, k, axis=0)[k] / LN2
+    else:
+        middle = np.partition(by_time, [k - 1, k], axis=0)
+        noise = np.mean(middle[k - 1 : k + 1], axis=0) / LN2
+
+    # a frequency without any noise (the SDR delivering constant samples) would give an infinite SNR and a noise level
+    # of -inf dBW, which JSON can't represent; the smallest positive value only replaces an exact zero
+    return np.maximum(noise, np.finfo(noise.dtype).tiny)
 
 
 def spectrogram_of(

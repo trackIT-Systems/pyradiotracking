@@ -1060,3 +1060,41 @@ class TestSampleClock:
         # e.g. NTP correcting the clock by a second after 15 s
         error = self.run(make_analyzer(), 60, step_at=15, step_s=1.0)
         assert abs(error) < 0.01
+
+
+class TestZeroNoise:
+    """An SDR delivering constant samples has frequencies without noise, which must not give infinite values."""
+
+    def spectrogram_with_silent_bin(self):
+        spec = np.full((8, 40), 1e-12, dtype=np.float32)
+        spec[3] = 0.0
+        spec[3, 10:20] = 1e-6  # a signal in the silent frequency
+        return spec
+
+    def test_noise_level_is_finite(self):
+        from radiotracking.analyze import noise_levels
+
+        noise = noise_levels(self.spectrogram_with_silent_bin())
+        assert np.all(noise > 0)
+        assert np.all(np.isfinite(dB(noise)))
+
+    def test_signal_in_a_silent_frequency_has_finite_values(self):
+        import json
+
+        from radiotracking.consume import jsonify
+
+        an = make_analyzer(signal_threshold_dbw=-130, signal_min_duration_ms=0.1)
+        freqs = np.fft.fftfreq(8, 1 / FS)
+        times = (np.arange(40) + 0.5) * NPERSEG / FS
+        (sig,) = an.extract_signals(freqs, times, self.spectrogram_with_silent_bin(), T0)
+        assert np.isfinite(sig.snr) and np.isfinite(sig.noise)
+        json.dumps(sig.as_dict, default=jsonify, allow_nan=False)
+
+    def test_spectrum_of_a_silent_frequency_has_finite_values(self):
+        an = make_analyzer(spectrum_interval_s=1e-9)
+        spec = self.spectrogram_with_silent_bin()
+        from radiotracking.analyze import noise_levels
+
+        an._accumulate_spectrum(np.fft.fftfreq(8, 1 / FS), spec, noise_levels(spec), T0, 40 * NPERSEG)
+        msg = an.signal_queue.get_nowait()
+        assert all(np.isfinite(v) for v in msg.noise + msg.snr)
