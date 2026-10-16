@@ -154,6 +154,12 @@ class Runner:
     publish_options.add_argument("--mqtt-port", help="port of mqtt broker", default=1883, type=int)
     publish_options.add_argument("--mqtt-qos", help="mqtt quality of service level (0, 1, 2)", default=1, type=int)
     publish_options.add_argument("--mqtt-keepalive", help="timeout for mqtt connection (s)", default=3600, type=int)
+    publish_options.add_argument(
+        "--mqtt-client-id",
+        help="mqtt client id (default: <hostname>-radiotracking), must differ for every instance using the broker",
+        default=None,
+        type=str,
+    )
 
     def create_and_start(
         self, device: str, calibration_db: float, sdr_max_restart: int | None = None

@@ -162,6 +162,31 @@ class TestMQTTConsumer:
         consumer.add(object())  # type: ignore[arg-type]
         client.publish.assert_not_called()
 
+    def test_default_client_id_is_the_hostname(self, consumer):
+        import platform
+
+        assert consumer.client_id == f"{platform.node()}-radiotracking"
+
+    def test_client_id_is_configurable(self):
+        with mock.patch("paho.mqtt.client.Client") as cls:
+            c = MQTTConsumer("localhost", 1883, 1, 60, prefix="x", mqtt_client_id="debug-run")
+        assert cls.call_args.kwargs["client_id"] == "debug-run"
+        c.shutdown()
+
+    def test_unexpected_disconnect_points_to_the_client_id(self, consumer, caplog):
+        failure = mock.Mock(is_failure=True)
+        with caplog.at_level(logging.WARNING):
+            consumer._on_disconnect(None, None, None, failure, None)
+        assert "--mqtt-client-id" in caplog.text
+        assert consumer.client_id in caplog.text
+
+    def test_regular_disconnect_is_not_logged(self, consumer, caplog):
+        with caplog.at_level(logging.WARNING):
+            consumer._on_disconnect(None, None, None, mock.Mock(is_failure=False), None)
+            consumer.shutdown()
+            consumer._on_disconnect(None, None, None, mock.Mock(is_failure=True), None)
+        assert caplog.text == ""
+
     def test_publishing_does_not_wait_for_the_broker(self, client, consumer, make_signal):
         consumer.add(make_signal())
         assert client.publish.call_count == 3

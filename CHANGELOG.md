@@ -54,6 +54,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 - The watchdog of the SDRs used the wall clock: a step of the clock (e.g. NTP correcting a station without RTC) restarted all SDRs (forward) or paused the watchdog (backward). It uses the monotonic clock now
 - Signal timestamps drifted with the crystal of the SDR (~35 ms per day at 0.4 ppm, seconds per day at tens of ppm) and kept any offset from lost samples or the latency of the first callback (1-9 ms between the SDRs of a station). The sample clock is anchored to the wall clock every 10 s of samples, to the earliest of that window's callbacks (the USB latency only delays them); wall clock steps are followed
 - The STOPPED states of the SDRs on termination never reached MQTT: the MQTT client was stopped before the analyzers. It is stopped after the main loop has published everything still queued now, which can't block since publishing doesn't wait for the broker
+- A second radiotracking instance on the same broker (e.g. for debugging) used the same MQTT client id, and both kept taking over the session from each other (5 disconnects each in 10 s on the debug station). The client id is configurable (`--mqtt-client-id`, default unchanged `<hostname>-radiotracking`), and unexpected disconnects are logged with a hint to it
 
 ### Removed
 

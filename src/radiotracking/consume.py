@@ -84,6 +84,9 @@ class MQTTConsumer(AbstractConsumer):
         The quality of service to use.
     mqtt_keepalive: int
         The keepalive interval in seconds.
+    mqtt_client_id: str | None
+        The MQTT client id, defaults to ``<hostname>-radiotracking``. The broker keeps the session of this id, a second
+        client with the same id takes it over.
     prefix: str
         The prefix to use for the MQTT topics.
     """
@@ -95,6 +98,7 @@ class MQTTConsumer(AbstractConsumer):
         mqtt_qos: int,
         mqtt_keepalive: int,
         prefix: str = "/radiotracking",
+        mqtt_client_id: Optional[str] = None,
         **kwargs,
     ):
         self.prefix = prefix
@@ -104,15 +108,28 @@ class MQTTConsumer(AbstractConsumer):
         # the last message is waited for, bounded so a hung broker cannot block the clean exit.
         self._shutdown_timeout_s = 2.0
         self._last_publish: Optional[paho.mqtt.client.MQTTMessageInfo] = None
+        self.client_id = mqtt_client_id or f"{platform.node()}-radiotracking"
         self.client = paho.mqtt.client.Client(
             callback_api_version=paho.mqtt.client.CallbackAPIVersion.VERSION2,
-            client_id=f"{platform.node()}-radiotracking",
+            client_id=self.client_id,
             clean_session=False,
         )
         # bounds the memory while the broker is unreachable, newer messages are dropped beyond it
         self.client.max_queued_messages_set(MQTT_MAX_QUEUED_MESSAGES)
+        self.client.on_disconnect = self._on_disconnect
         self.client.connect(mqtt_host, mqtt_port, keepalive=mqtt_keepalive)
         self.client.loop_start()
+
+    def _on_disconnect(self, client, userdata, flags, reason_code, properties):
+        """Log unexpected disconnects: paho reconnects, but they lose time and may point to a duplicate client id."""
+        if self._shutdown or not reason_code.is_failure:
+            return
+        logger.warning(
+            "MQTT connection lost (%s), reconnecting. If this repeats, another client may be using the client id '%s' "
+            "(e.g. a second radiotracking instance), set a different one with --mqtt-client-id.",
+            reason_code,
+            self.client_id,
+        )
 
     def __del__(self):
         try:
