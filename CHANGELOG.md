@@ -24,6 +24,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 ### Added
 
 - Test suite (`pytest`) covering messages, matching, configuration, consumers, signal analysis and the runner; known defects are recorded as strict `xfail` tests
+- GitHub Actions run the test suite on every push to `main`, with Python 3.12, 3.13 and 3.14 on the latest dependencies and with Python 3.13 on the minimum versions (those of Debian 13); the coverage report is shown in the summary of each run
 - Sample rate (`--sample-rate`) and tuner bandwidth (`--tuner-bandwidth`) are configurable, tuner bandwidth defaults to twice the sample rate
 - SDR spectrogram metrics are published in state messages (`--status-interval`)
 

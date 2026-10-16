@@ -1,0 +1,42 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }}, ${{ matrix.dependencies }} dependencies)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+        dependencies: [latest]
+        include:
+          # the versions of Debian 13 (trixie), which the stations run
+          - python-version: "3.13"
+            dependencies: minimum
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # librtlsdr is not installed, tests/conftest.py stubs pyrtlsdr
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ matrix.dependencies }}" = minimum ]; then
+            python -m pip install numpy==2.2.4 scipy==1.15.3 paho-mqtt==2.1.0 cbor2==5.6.5 pyrtlsdr==0.5.0
+          fi
+          python -m pip install -e . pytest pytest-cov
+
+      - name: Test
+        run: |
+          echo "### Coverage (Python ${{ matrix.python-version }}, ${{ matrix.dependencies }} dependencies)" >> "$GITHUB_STEP_SUMMARY"
+          python -m pytest -v --cov=radiotracking --cov-report=term-missing --cov-report=markdown-append:"$GITHUB_STEP_SUMMARY"
