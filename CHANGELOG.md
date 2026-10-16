@@ -21,6 +21,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 ### Fixed
 
 - Analyzers that hang after opening the device before the first USB sample are restarted
+- Signal extraction raised `IndexError` (killing the analysis thread, and with it the station after the restarts) when the analysis block was a single FFT segment, e.g. `fft_nperseg` of 32768 at 300 kHz; the segment duration is computed from `fft_nperseg / sample_rate` now. Such a block is still too short to detect signals
 - Error messages for invalid `lna_gain`, `mixer_gain` and `vga_gain` values showed the raw format string and a tuple
 - `MatchedSignal` printed a power of exactly 0.0 dBW as `None`
 - `write_config(help=True)` (`etc/generate-example-config.py`) raised on Python 3.14 and lowercased the help texts on 3.13; configs are written without ConfigParser now, and read without `%` interpolation

@@ -51,13 +51,13 @@ def make_analyzer(**over):
     return SignalAnalyzer(**kw)
 
 
-def burst_iq(n_samples, start_s, dur_s, tone_bin=TONE_BIN, amp=1.0, noise=1e-3, seed=0):
-    """Complex noise with a tone burst of `dur_s` starting at `start_s`."""
+def burst_iq(n_samples, start_s, dur_s, tone_bin=TONE_BIN, amp=1.0, noise=1e-3, seed=0, fs=FS, bin_hz=BIN_HZ):
+    """Complex noise with a tone burst of `dur_s` starting at `start_s`, the tone sits on an FFT bin (`bin_hz` wide)."""
     rng = np.random.default_rng(seed)
     iq = noise * (rng.standard_normal(n_samples) + 1j * rng.standard_normal(n_samples))
-    a, b = int(start_s * FS), int((start_s + dur_s) * FS)
-    t = np.arange(a, min(b, n_samples)) / FS
-    iq[a : min(b, n_samples)] += amp * np.exp(2j * np.pi * tone_bin * BIN_HZ * t)
+    a, b = int(start_s * fs), int((start_s + dur_s) * fs)
+    t = np.arange(a, min(b, n_samples)) / fs
+    iq[a : min(b, n_samples)] += amp * np.exp(2j * np.pi * tone_bin * bin_hz * t)
     return iq.astype(np.complex64)
 
 
@@ -380,17 +380,42 @@ class TestExtractSignals:
         assert len(sigs) == 1
         assert sigs[0].duration.total_seconds() == pytest.approx(0.02, abs=0.003)
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=IndexError,
-        reason="the segment duration is taken from times[1] - times[0], which does not exist when analysis_block_samples == fft_nperseg",
-    )
     def test_single_segment_block_does_not_crash(self):
+        # a block of one segment can not hold a signal (it always "laps into the next spectrogram")
         an = make_analyzer()
         iq = burst_iq(NPERSEG, 0.0, 0.0)
         freqs, times, spec = spectrogram(an, iq)
         assert len(times) == 1
         assert an.extract_signals(freqs, times, spec, T0) == []
+
+    def test_single_segment_block_with_a_signal_does_not_crash(self):
+        an = make_analyzer()
+        freqs, times, spec = spectrogram(an, burst_iq(NPERSEG, 0.0, NPERSEG / FS))
+        assert len(times) == 1
+        assert an.extract_signals(freqs, times, spec, T0) == []
+
+    @pytest.mark.parametrize("sample_rate,nperseg", [(300_000, 256), (1_200_000, 1024)])
+    def test_wide_band_setup_behaves_like_the_default(self, sample_rate, nperseg):
+        # 1.2 MHz with 1024 samples per segment has the same segment duration and bin width as the default,
+        # and the default block is 0.1 s in both cases
+        an = make_analyzer(sample_rate=sample_rate, fft_nperseg=nperseg)
+        block = an._finalize_analysis_block_samples()
+        assert block / sample_rate == pytest.approx(0.1, abs=0.002)
+        assert nperseg / sample_rate == pytest.approx(256 / 300_000)
+
+        iq = burst_iq(block, 0.03, 0.02, fs=sample_rate)
+        sigs, _ = detect(an, iq)
+        assert len(sigs) == 1
+        assert sigs[0].frequency == pytest.approx(CENTER + TONE_BIN * BIN_HZ, abs=1)
+        assert sigs[0].duration.total_seconds() == pytest.approx(0.02, abs=0.003)
+        assert (sigs[0].ts - T0).total_seconds() == pytest.approx(0.03, abs=0.003)
+
+    def test_segment_duration_follows_the_configured_sample_rate(self):
+        # the hardware may adjust the sample rate after the analyzer was created
+        an = make_analyzer(sample_rate=250_000)
+        an.sample_rate = 300_000
+        sigs, _ = detect(an, burst_iq(30208, 0.03, 0.02))
+        assert len(sigs) == 1
 
 
 @pytest.mark.parametrize("method", [m for m in ("fork", "spawn", "forkserver") if m in multiprocessing.get_all_start_methods()])

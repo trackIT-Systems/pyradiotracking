@@ -680,7 +680,9 @@ class SignalAnalyzer(multiprocessing.Process):
         if len(times) == 0:
             return signals
 
-        signal_min_duration_num = self.signal_min_duration / (times[1] - times[0])
+        # duration of one spectrogram segment (no overlap), known from the configuration, a block may hold a single one
+        segment_duration = self.fft_nperseg / self.sample_rate
+        signal_min_duration_num = self.signal_min_duration / segment_duration
 
         # iterate over all frequencies
         for fi, fft in enumerate(spectrogram):
