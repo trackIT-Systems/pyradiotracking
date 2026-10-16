@@ -10,6 +10,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 
 ### Added
 
+- Test suite (`pytest`) covering messages, matching, bearing, configuration, consumers, signal analysis and the runner; known defects are recorded as strict `xfail` tests
 - Sample rate (`--sample-rate`) and tuner bandwidth (`--tuner-bandwidth`) are configurable, tuner bandwidth defaults to twice the sample rate
 - SDR spectrogram metrics are published in state messages (`--status-interval`)
 

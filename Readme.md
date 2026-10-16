@@ -111,6 +111,15 @@ publish:
   -mv, --mqtt-verbose   increase mqtt logging verbosity (default: 0)
 ```
 
+### Development
+
+```bash
+$ pip install -e . pytest
+$ pytest
+```
+
+The tests run without an SDR and without librtlsdr (a stand-in for `rtlsdr` is used if the library is missing). Tests marked `xfail` document known defects; they are strict, so fixing a defect makes the test fail until its marker is removed.
+
 ### Versioning
 
 radiotracking follows [Semantic Versioning](https://semver.org/). Releases are tagged as `MAJOR.MINOR.PATCH`, notable changes are documented in the [changelog](CHANGELOG.md). While the major version is 0, minor releases may contain breaking changes.
