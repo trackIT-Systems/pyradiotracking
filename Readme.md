@@ -18,7 +18,7 @@ An example configuration with all options is provided in [etc/radiotracking.ini]
 ```bash
 $ radiotracking --config etc/radiotracking.ini --csv --path data
 $ radiotracking -h
-usage: radiotracking [-h] [-v] [--calibrate] [--config CONFIG] [--station STATION] [--schedule [SCHEDULE ...]] [-d [DEVICE ...]]
+usage: radiotracking [-h] [-v] [--calibrate] [--config CONFIG] [--station STATION] [-d [DEVICE ...]]
                      [-c [CALIBRATION ...]] [-f CENTER_FREQ] [-s SAMPLE_RATE] [-b SDR_CALLBACK_LENGTH] [-g GAIN] [--lna-gain LNA_GAIN]
                      [--mixer-gain MIXER_GAIN] [--vga-gain VGA_GAIN] [--tuner-bandwidth TUNER_BANDWIDTH] [--sdr-max-restart SDR_MAX_RESTART]
                      [--sdr-timeout-s SDR_TIMEOUT_S] [--sdr-dynamic-scheduling] [--state-update-s STATE_UPDATE_S]
@@ -36,8 +36,6 @@ options:
   --calibrate           enable calibration mode (default: False)
   --config CONFIG       configuration file (default: etc/radiotracking.ini)
   --station STATION     name of the station (default: <hostname>)
-  --schedule [SCHEDULE ...]
-                        specify a schedule of operation, e.g. 18:00-18:59:59 (default: [])
 
 rtl-sdr:
   -d, --device [DEVICE ...]

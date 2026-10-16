@@ -12,6 +12,14 @@ SECTION_ALIASES: Dict[str, Tuple[str, ...]] = {
     "optional arguments": ("options",),
 }
 
+logger = logging.getLogger(__name__)
+
+# Options that were removed. They are ignored in config files, but a warning is logged if one is set to a value
+# other than empty/false, because the station no longer behaves as configured.
+REMOVED_OPTIONS: Dict[str, str] = {
+    "schedule": "the schedule of operation was removed, radiotracking runs permanently",
+}
+
 
 class ArgConfParser(ArgumentParser):
     """
@@ -96,6 +104,11 @@ class ArgConfParser(ArgumentParser):
                 for section in sections:
                     if action.dest in config[section]:
                         conf_dict[action.dest] = literal_eval(config[section][action.dest])
+
+        for section in config.sections():
+            for key, message in REMOVED_OPTIONS.items():
+                if key in config[section] and literal_eval(config[section][key]):
+                    logger.warning(f"Ignoring '{key}' in [{section}] of '{path}': {message}.")
 
         return conf_dict
 

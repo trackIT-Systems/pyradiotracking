@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import schedule
 
 import radiotracking.__main__ as rt_main
 from radiotracking import StateMessage
@@ -17,9 +16,7 @@ from radiotracking.__main__ import Runner
 
 @pytest.fixture(autouse=True)
 def clean_state(restore_signal_handlers):
-    schedule.clear()
     yield
-    schedule.clear()
 
 
 @pytest.fixture
@@ -76,7 +73,6 @@ class TestInit:
         assert r.running
         assert r.analyzers == []
         assert r.args.calibration == [0.0]
-        assert r.schedule == []
 
     def test_calibration_defaults_to_zero_per_device(self, make_runner):
         assert make_runner("-d", "0", "1", "2").args.calibration == [0.0, 0.0, 0.0]
@@ -109,43 +105,6 @@ class TestInit:
         r = make_runner()
         assert r.matcher in r.connector.consumers
         assert r.matcher.signal_queue is r.connector.q
-
-
-class TestSchedule:
-    def test_valid_entry(self, make_runner):
-        r = make_runner("--schedule", "18:00-18:59:59")
-        assert r.schedule == [(datetime.time(18, 0), datetime.time(18, 59, 59))]
-        assert len(schedule.get_jobs()) == 2
-
-    def test_two_disjoint_entries(self, make_runner):
-        r = make_runner("--schedule", "06:00-08:00", "18:00-20:00")
-        assert len(r.schedule) == 2
-
-    def test_start_after_stop_is_rejected(self, make_runner):
-        with pytest.raises(SystemExit):
-            make_runner("--schedule", "20:00-18:00")
-
-    @pytest.mark.parametrize(
-        "a,b",
-        [
-            ("10:00-12:00", "11:00-13:00"),
-            ("11:00-13:00", "10:00-12:00"),
-            ("10:00-14:00", "11:00-12:00"),
-            ("11:00-12:00", "10:00-14:00"),
-        ],
-    )
-    def test_overlap_is_rejected(self, make_runner, a, b):
-        with pytest.raises(SystemExit):
-            make_runner("--schedule", a, b)
-
-    @pytest.mark.xfail(strict=True, reason="overlap check only compares strictly earlier/later starts, so equal start times are not detected")
-    def test_equal_start_is_an_overlap(self, make_runner):
-        with pytest.raises(SystemExit):
-            make_runner("--schedule", "10:00-11:00", "10:00-12:00")
-
-    def test_malformed_entry(self, make_runner):
-        with pytest.raises((SystemExit, ValueError)):
-            make_runner("--schedule", "18:00")
 
 
 class TestCheckAnalyzers:
@@ -286,7 +245,7 @@ class TestStartAnalyzers:
         assert calls == [("0", 1.0), ("1", 2.0)]
         assert [a.device for a in r.analyzers] == ["0", "1"]
 
-    def test_main_runs_permanently_without_schedule(self, make_runner, monkeypatch):
+    def test_main_starts_the_analyzers(self, make_runner, monkeypatch):
         r = make_runner()
         started = []
         monkeypatch.setattr(r, "start_analyzers", lambda: started.append(1))
@@ -335,32 +294,8 @@ class TestStartAnalyzers:
             r.main()
         assert [type(m).__name__ for m in published] == ["Signal", "MatchingSignal"]
 
-    def test_main_starts_when_inside_schedule(self, make_runner, monkeypatch):
-        now = datetime.datetime.now()
-        if not (datetime.time(0, 5) < now.time() < datetime.time(23, 55)):
-            pytest.skip("too close to midnight")
-        start = (now - datetime.timedelta(minutes=2)).strftime("%H:%M")
-        stop = (now + datetime.timedelta(minutes=2)).strftime("%H:%M")
-        r = make_runner("--schedule", f"{start}-{stop}")
-        started = []
-        monkeypatch.setattr(r, "start_analyzers", lambda: started.append(1))
-        monkeypatch.setattr(r, "check_analyzers", lambda: None)
-        monkeypatch.setattr(r.connector, "step", lambda timeout: setattr(r, "running", False))
-        with pytest.raises(SystemExit):
-            r.main()
-        assert started == [1]
 
-    def test_main_stays_idle_outside_schedule(self, make_runner, monkeypatch):
-        r = make_runner("--schedule", "00:00-00:00:01")
-        started = []
-        monkeypatch.setattr(r, "start_analyzers", lambda: started.append(1))
-        monkeypatch.setattr(r, "check_analyzers", lambda: None)
-        monkeypatch.setattr(r.connector, "step", lambda timeout: setattr(r, "running", False))
-        with pytest.raises(SystemExit):
-            r.main()
-        assert started == []
-
-
-def test_parser_has_no_dashboard_options():
+def test_parser_has_no_dashboard_or_schedule_options():
     help_text = Runner.parser.format_help()
     assert "dashboard" not in help_text
+    assert "--schedule" not in help_text

@@ -1,5 +1,6 @@
 import configparser
 import io
+import logging
 from pathlib import Path
 
 import pytest
@@ -82,7 +83,7 @@ def test_write_config_with_help(tmp_path):
     buf = io.StringIO()
     parser.write_config(args, buf, help=True)
     assert "# center frequency to tune to (Hz)" in buf.getvalue()
-    assert "# specify a schedule of operation, e.g. 18:00-18:59:59" in buf.getvalue()
+    assert "# interval for publishing aggregated spectrogram metrics in state messages (s); <=0 disables" in buf.getvalue()
 
 
 def test_config_written_with_help_can_be_read_back(tmp_path):
@@ -111,11 +112,10 @@ def test_station_default_is_hostname(tmp_path):
 
 @pytest.mark.parametrize("section", ["optional arguments", "options"])
 def test_optional_arguments_section_is_read_under_either_name(tmp_path, section):
-    cfg = write(tmp_path, f"[{section}]\nstation = 'legacy'\nverbose = 2\nschedule = ['10:00-11:00']\n")
+    cfg = write(tmp_path, f"[{section}]\nstation = 'legacy'\nverbose = 2\n")
     args = parser.parse_args(["--config", cfg])
     assert args.station == "legacy"
     assert args.verbose == 2
-    assert args.schedule == ["10:00-11:00"]
 
 
 def test_current_section_name_wins_over_legacy_name(tmp_path):
@@ -139,3 +139,25 @@ def test_arg_conf_parser_without_config_dest():
     p = ArgConfParser()
     p.add_argument("--x", default=1, type=int)
     assert p.parse_args(["--x", "2"]).x == 2
+
+
+class TestRemovedOptions:
+    def test_empty_schedule_of_old_configs_is_ignored_silently(self, tmp_path, caplog):
+        cfg = write(tmp_path, "[optional arguments]\nschedule = []\n")
+        with caplog.at_level(logging.WARNING):
+            args = parser.parse_args(["--config", cfg])
+        assert "schedule" not in vars(args)
+        assert caplog.text == ""
+
+    @pytest.mark.parametrize("section", ["options", "optional arguments"])
+    def test_configured_schedule_is_ignored_with_a_warning(self, tmp_path, caplog, section):
+        cfg = write(tmp_path, f"[{section}]\nschedule = ['10:00-11:00']\nstation = 'x'\n")
+        with caplog.at_level(logging.WARNING):
+            args = parser.parse_args(["--config", cfg])
+        assert args.station == "x"
+        assert "schedule" not in vars(args)
+        assert "Ignoring 'schedule'" in caplog.text
+
+    def test_schedule_is_not_a_command_line_option(self, tmp_path):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--config", str(tmp_path / "none.ini"), "--schedule", "10:00-11:00"])

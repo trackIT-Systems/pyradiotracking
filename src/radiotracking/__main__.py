@@ -14,8 +14,6 @@ import time
 from ast import literal_eval
 from typing import List
 
-import schedule
-
 from radiotracking import StateMessage
 from radiotracking.analyze import SignalAnalyzer
 from radiotracking.config import ArgConfParser
@@ -46,9 +44,6 @@ class Runner:
     parser.add_argument("--calibrate", help="enable calibration mode", action="store_true")
     parser.add_argument("--config", help="configuration file", default="etc/radiotracking.ini", type=str)
     parser.add_argument("--station", help="name of the station", default=platform.node(), type=str)
-    parser.add_argument(
-        "--schedule", help="specify a schedule of operation, e.g. 18:00-18:59:59", type=str, default=[], nargs="*"
-    )
 
     # sdr / sampling options
     sdr_options = parser.add_argument_group("rtl-sdr")
@@ -404,57 +399,13 @@ class Runner:
         self.matcher = SignalMatcher(signal_queue=self.connector.q, **self.args.__dict__)
         self.connector.consumers.append(self.matcher)
 
-        self.schedule = []
-
-        for entry in self.args.schedule:
-            start, stop = entry.split("-")
-
-            try:
-                start_s = schedule.every().day.at(start)
-                stop_s = schedule.every().day.at(stop)
-
-                if start_s.at_time > stop_s.at_time:
-                    raise schedule.ScheduleError("Schedule start is after stop")
-
-                start_s.do(self.start_analyzers)
-                stop_s.do(self.stop_analyzers)
-
-                # check if there is an overlap with another schedule
-                for other_start, other_stop in self.schedule:
-                    # if they start before us and don't finish before us
-                    if other_start < start_s.at_time and not other_stop < start_s.at_time:
-                        raise schedule.ScheduleError(f"Scheduling overlaps with {other_start}-{other_stop}")
-
-                    # if we start before them and do not finish before them
-                    if start_s.at_time < other_start:
-                        logger.debug("we start before them")
-                        if not stop_s.at_time < other_start:
-                            logger.debug("we don't finish before them")
-                            raise schedule.ScheduleError(f"Scheduling overlaps with {other_start}-{other_stop}")
-
-                self.schedule.append((start_s.at_time, stop_s.at_time))
-                logger.debug(f"Added {start_s.at_time}-{stop_s.at_time} to schedule")
-
-            except schedule.ScheduleError as error:
-                logger.error(f"{error}, please check configuration '{entry}'.")
-                exit(1)
-
     def main(self):
         """
         Run the main loop of the application.
         """
         logger.warning("Running radiotracking...")
 
-        # evaluate schedulings, and start if current time is in interval
-        ts = datetime.datetime.now()
-        for start_s, stop_s in self.schedule:
-            if start_s < ts.time() and ts.time() < stop_s:
-                logger.info(f"starting analyzers now (schedule {start_s}-{stop_s})")
-                self.start_analyzers()
-
-        # if no schedule is defined, run permanently
-        if not self.schedule:
-            self.start_analyzers()
+        self.start_analyzers()
 
         next_check = datetime.datetime.now()
         while self.running:
@@ -462,9 +413,6 @@ class Runner:
             if next_check < datetime.datetime.now():
                 self.check_analyzers()
                 next_check += datetime.timedelta(seconds=1)
-
-            # run scheduled functions (if present)
-            schedule.run_pending()
 
             # do a connector step with remaining time (check for queued signals)
             # while idle, publish matches that can not be completed any more
