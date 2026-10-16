@@ -99,21 +99,36 @@ def test_immutable_args_are_those_given_on_the_command_line():
     assert set(parser.immutable_args(["-f", "150000000", "--csv"])) == {"center_freq", "csv"}
 
 
-def test_station_default_is_hostname():
+def test_station_default_is_hostname(tmp_path):
     import platform
 
-    assert parser.parse_args([]).station == platform.node()
+    assert parser.parse_args(["--config", str(tmp_path / "none.ini")]).station == platform.node()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="since Python 3.10 argparse names the group of optional arguments 'options'; configs written by older versions with '[optional arguments]' (e.g. the one shipped in tsOS-vhf) are silently ignored",
-)
-def test_legacy_optional_arguments_section_is_read(tmp_path):
-    cfg = write(tmp_path, "[optional arguments]\nstation = 'legacy'\nverbose = 2\n")
+@pytest.mark.parametrize("section", ["optional arguments", "options"])
+def test_optional_arguments_section_is_read_under_either_name(tmp_path, section):
+    cfg = write(tmp_path, f"[{section}]\nstation = 'legacy'\nverbose = 2\nschedule = ['10:00-11:00']\n")
     args = parser.parse_args(["--config", cfg])
     assert args.station == "legacy"
     assert args.verbose == 2
+    assert args.schedule == ["10:00-11:00"]
+
+
+def test_current_section_name_wins_over_legacy_name(tmp_path):
+    cfg = write(tmp_path, "[optional arguments]\nstation = 'old'\nverbose = 1\n[options]\nstation = 'new'\n")
+    args = parser.parse_args(["--config", cfg])
+    assert args.station == "new"
+    assert args.verbose == 1
+
+
+def test_legacy_config_of_tsos_vhf_is_read(tmp_path):
+    cfg = write(
+        tmp_path,
+        "[optional arguments]\nverbose = 0\ncalibrate = False\nconfig = '/boot/firmware/radiotracking.ini'\n"
+        "schedule = []\n[rtl-sdr]\ndevice = ['0']\ncalibration = [0.0]\n",
+    )
+    args = parser.parse_args(["--config", cfg])
+    assert args.device == ["0"] and args.calibration == [0.0]
 
 
 def test_arg_conf_parser_without_config_dest():

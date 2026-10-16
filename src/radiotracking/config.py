@@ -6,6 +6,14 @@ from configparser import ConfigParser
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Text, TextIO, Tuple
 
 
+# argparse names the group of optional arguments "optional arguments" before Python 3.10 and "options" since.
+# Config files written with either name are read, regardless of the running Python version.
+SECTION_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "options": ("optional arguments",),
+    "optional arguments": ("options",),
+}
+
+
 class ArgConfParser(ArgumentParser):
     """
     An argparse.ArgumentParser subclass that reads a config file and updates the namespace accordingly.
@@ -105,14 +113,14 @@ class ArgConfParser(ArgumentParser):
             if not isinstance(group.title, str):
                 continue
 
-            # skip groups not used in the config file
-            if group.title not in config:
-                continue
+            # sections to read, aliases first so that the group's own title wins if both are present
+            sections = [name for name in (*SECTION_ALIASES.get(group.title, ()), group.title) if name in config]
 
             # iterate actions and extract values
             for action in group._group_actions:
-                if action.dest in config[group.title]:
-                    conf_dict[action.dest] = literal_eval(config[group.title][action.dest])
+                for section in sections:
+                    if action.dest in config[section]:
+                        conf_dict[action.dest] = literal_eval(config[section][action.dest])
 
         return conf_dict
 
