@@ -40,6 +40,7 @@ class FakeAnalyzer:
     def __init__(self, device="0", alive=True, streaming_ts=0.0, last_data_ts=0.0, started_at=None, max_restart=3, timeout=2):
         self.device = device
         self.calibration_db = 0.0
+        self.fullscale_dbm = None
         self.sdr_max_restart = max_restart
         self.sdr_timeout_s = timeout
         self.streaming_ts = FakeValue(streaming_ts)
@@ -85,6 +86,37 @@ class TestInit:
 
     def test_calibration_defaults_to_zero_per_device(self, make_runner):
         assert make_runner("-d", "0", "1", "2").args.calibration == [0.0, 0.0, 0.0]
+
+    def test_fullscale_defaults_to_uncalibrated(self, make_runner):
+        r = make_runner("-d", "0", "1")
+        assert r.fullscale_dbm == [None, None]
+        assert r.args.fullscale_dbm == []
+
+    def test_fullscale_per_device(self, make_runner, monkeypatch):
+        r = make_runner("-d", "0", "1", "--fullscale-dbm", "-10.5", "-11")
+        assert r.fullscale_dbm == [-10.5, -11.0]
+        calls = []
+        monkeypatch.setattr(
+            r, "create_and_start", lambda d, c, fullscale_dbm=None: calls.append((d, fullscale_dbm)) or FakeAnalyzer(d)
+        )
+        r.start_analyzers()
+        assert calls == [("0", -10.5), ("1", -11.0)]
+
+    def test_fullscale_must_match_devices(self, make_runner):
+        with pytest.raises(SystemExit) as exc:
+            make_runner("-d", "0", "1", "--fullscale-dbm", "-10")
+        assert exc.value.code == 1
+
+    def test_restart_keeps_the_fullscale_reference(self, make_runner, monkeypatch):
+        r = make_runner("-d", "0", "--fullscale-dbm", "-10")
+        calls = []
+        monkeypatch.setattr(r, "create_and_start", lambda *a, **kw: calls.append((a, kw)) or FakeAnalyzer("0"))
+        a = FakeAnalyzer("0", alive=False)
+        a.fullscale_dbm = -10.0
+        a.is_alive = lambda: False
+        r.analyzers = [a]
+        r.check_analyzers()
+        assert calls and calls[0][0][-1] == -10.0
 
     def test_calibration_must_match_devices(self, make_runner):
         with pytest.raises(SystemExit) as exc:
@@ -155,7 +187,7 @@ class TestCheckAnalyzers:
         r = make_runner()
         r.created = []
 
-        def create(device, calibration_db, sdr_max_restart=None):
+        def create(device, calibration_db, sdr_max_restart=None, fullscale_dbm=None):
             a = FakeAnalyzer(device, max_restart=sdr_max_restart if sdr_max_restart is not None else 3)
             r.created.append(a)
             return a
@@ -328,9 +360,11 @@ class TestStartAnalyzers:
     def test_one_analyzer_per_device(self, make_runner, monkeypatch):
         r = make_runner("-d", "0", "1", "-c", "1.0", "2.0")
         calls = []
-        monkeypatch.setattr(r, "create_and_start", lambda d, c: calls.append((d, c)) or FakeAnalyzer(d))
+        monkeypatch.setattr(
+            r, "create_and_start", lambda d, c, fullscale_dbm=None: calls.append((d, c, fullscale_dbm)) or FakeAnalyzer(d)
+        )
         r.start_analyzers()
-        assert calls == [("0", 1.0), ("1", 2.0)]
+        assert calls == [("0", 1.0, None), ("1", 2.0, None)]
         assert [a.device for a in r.analyzers] == ["0", "1"]
 
     def test_main_starts_the_analyzers(self, make_runner, monkeypatch):

@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from radiotracking import MatchingSignal, StateMessage
+from radiotracking import CalibratedMatchedSignal, MatchingSignal, Signal, StateMessage
 from radiotracking.match import SignalMatcher
 
 from .conftest import T0
@@ -164,3 +164,23 @@ class TestMatchingEdges:
         matcher.add(make_signal(device="7"))
         assert len(matcher._matched) == 1
         assert matcher._matched[0]._avgs == [-55.0, None, None, None]
+
+
+def test_calibrated_match_is_published_after_the_plain_one():
+    q = queue.Queue()
+    m = SignalMatcher(["0", "1"], 1.0, 0.1, 1000.0, q)
+    m.add(Signal("0", T0, 150_100_000.0, 0.02, -50, -55, 1.0, -80, 25, -90.0, -95.0, -115.0))
+    m.flush(force=True)
+    first, second = q.get_nowait(), q.get_nowait()
+    assert isinstance(first, MatchingSignal)
+    assert isinstance(second, CalibratedMatchedSignal)
+    assert second.as_list[3:] == [-95.0, None]
+
+
+def test_uncalibrated_match_has_no_calibrated_message(make_signal):
+    q = queue.Queue()
+    m = SignalMatcher(["0", "1"], 1.0, 0.1, 1000.0, q)
+    m.add(make_signal())
+    m.flush(force=True)
+    assert isinstance(q.get_nowait(), MatchingSignal)
+    assert q.empty()

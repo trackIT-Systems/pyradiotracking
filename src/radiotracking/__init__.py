@@ -174,6 +174,96 @@ class SpectrumMessage(AbstractMessage):
         )
 
 
+class GainMessage(AbstractMessage):
+    """
+    The gain of a device and how its dBW values convert to dBm, published when the analyzer starts.
+
+    The powers of signals are dB relative to the full scale of the ADC (density, per bin). For a device with
+    ``offset_dB``, ``dBm = dBW + offset_dB`` for the powers of signals (``max``, ``avg``, ``noise``) at the antenna
+    port. ``offset_dB = calibration_dB + tone_dB - gain_dB + fullscale_dBm``.
+
+    Parameters
+    ----------
+    device: str
+        The device.
+    ts: datetime.datetime
+        The time the gain was set.
+    gain_dB: typing.Optional[float]
+        The total gain LNA + mixer + VGA in dB, None if the gain stages could not be set separately.
+    lna: int
+        LNA gain index.
+    mixer: int
+        Mixer gain index.
+    vga: int
+        VGA gain index.
+    calibration_dB: float
+        The calibration offset subtracted from the published dBW values.
+    tone_dB: float
+        Offset from the power density of the analysis to the power of a tone, ``10 log10(fs sum(w^2) / sum(w)^2)``.
+    fullscale_dBm: typing.Optional[float]
+        The configured input power at the antenna port that gives a full scale tone at 0 dB gain, None if unknown.
+    offset_dB: typing.Optional[float]
+        The offset from dBW to dBm, None if the device is not calibrated.
+    """
+
+    header: List[str] = [
+        "Device",
+        "Time",
+        "Gain (dB)",
+        "LNA",
+        "Mixer",
+        "VGA",
+        "Calibration (dB)",
+        "Tone (dB)",
+        "Full scale (dBm)",
+        "Offset (dB)",
+    ]
+
+    def __init__(
+        self,
+        device: str,
+        ts: datetime.datetime,
+        gain_dB: Optional[float],
+        lna: int,
+        mixer: int,
+        vga: int,
+        calibration_dB: float,
+        tone_dB: float,
+        fullscale_dBm: Optional[float],
+        offset_dB: Optional[float],
+    ):
+        super().__init__()
+
+        self.device = device
+        self.ts = ts
+        self.gain_dB = gain_dB
+        self.lna = lna
+        self.mixer = mixer
+        self.vga = vga
+        self.calibration_dB = calibration_dB
+        self.tone_dB = tone_dB
+        self.fullscale_dBm = fullscale_dBm
+        self.offset_dB = offset_dB
+
+    @property
+    def as_list(self) -> List:
+        return [
+            self.device,
+            self.ts,
+            self.gain_dB,
+            self.lna,
+            self.mixer,
+            self.vga,
+            self.calibration_dB,
+            self.tone_dB,
+            self.fullscale_dBm,
+            self.offset_dB,
+        ]
+
+    def __repr__(self) -> str:
+        return f"GainMessage({self.device}, {self.ts}, {self.gain_dB}, offset {self.offset_dB})"
+
+
 class AbstractSignal(AbstractMessage):
     """
     Abstract class for a signal.
@@ -212,6 +302,14 @@ class Signal(AbstractSignal):
         The noise level of the signal.
     snr_dB: typing.Union[float, str]
         The signal to noise ratio of the signal.
+    max_dBm: typing.Optional[float]
+        The maximum power of the signal in dBm at the antenna port, only for calibrated devices (see
+        :class:`GainMessage`).
+    avg_dBm: typing.Optional[float]
+        The average power of the signal in dBm at the antenna port.
+    noise_dBm: typing.Optional[float]
+        The noise level in dBm at the antenna port, as power in the bandwidth a signal is measured in, so that
+        ``max_dBm - noise_dBm == snr_dB``.
     """
 
     def __init__(
@@ -225,6 +323,9 @@ class Signal(AbstractSignal):
         std_dB: Union[float, str],
         noise_dBW: Union[float, str],
         snr_dB: Union[float, str],
+        max_dBm: Optional[float] = None,
+        avg_dBm: Optional[float] = None,
+        noise_dBm: Optional[float] = None,
     ):
         super().__init__()
 
@@ -250,6 +351,16 @@ class Signal(AbstractSignal):
         self.snr: float = float(snr_dB)
         """The signal to noise ratio of the signal."""
 
+        self.max_dBm: Optional[float] = None if max_dBm is None else float(max_dBm)
+        """The maximum power in dBm at the antenna port, None if the device is not calibrated."""
+        self.avg_dBm: Optional[float] = None if avg_dBm is None else float(avg_dBm)
+        """The average power in dBm at the antenna port."""
+        self.noise_dBm: Optional[float] = None if noise_dBm is None else float(noise_dBm)
+        """The noise level in dBm at the antenna port."""
+
+        if self.max_dBm is not None:
+            self.header = Signal.header_calibrated
+
     header = [
         "Device",
         "Time",
@@ -262,9 +373,12 @@ class Signal(AbstractSignal):
         "snr (dB)",
     ]
 
+    header_calibrated = [*header, "max (dBm)", "avg (dBm)", "noise (dBm)"]
+    """Header of the signals of calibrated devices, the calibrated powers are appended."""
+
     @property
     def as_list(self):
-        return [
+        values = [
             self.device,
             self.ts,
             self.frequency,
@@ -275,6 +389,9 @@ class Signal(AbstractSignal):
             self.noise,
             self.snr,
         ]
+        if self.max_dBm is not None:
+            values += [self.max_dBm, self.avg_dBm, self.noise_dBm]
+        return values
 
     def __repr__(self):
         return f"Signal({self.device}, {self.ts}, {self.frequency}, {self.duration}, {self.max}, {self.avg}, {self.std}, {self.noise}, {self.snr})"
@@ -352,6 +469,17 @@ class MatchedSignal(AbstractSignal):
         return f"{self.__class__.__name__}<SDRs {self.devices}, {self.frequency/1000/1000:.3f} MHz, {self.duration.total_seconds()*1000:.2f} ms, dBWs: [{avgs_str}]>"
 
 
+class CalibratedMatchedSignal(MatchedSignal):
+    """
+    Matched signal with the average powers in dBm at the antenna port of the devices (calibrated devices only, the
+    others are empty), laid out like :class:`MatchedSignal`.
+    """
+
+    def __str__(self):
+        avgs_str = ", ".join([f"{avg:.2f}" if avg is not None else f"{None}" for avg in self._avgs])
+        return f"{self.__class__.__name__}<SDRs {self.devices}, {self.frequency/1000/1000:.3f} MHz, {self.duration.total_seconds()*1000:.2f} ms, dBms: [{avgs_str}]>"
+
+
 class MatchingSignal(MatchedSignal):
     """
     Class for matching signals detected on multiple devices.
@@ -411,6 +539,15 @@ class MatchingSignal(MatchedSignal):
         typing.List[float]
         """
         return [self._sigs[d].avg if d in self._sigs else None for d in self.devices]
+
+    def calibrated(self) -> Optional[CalibratedMatchedSignal]:
+        """
+        The matched signal with the calibrated average powers (dBm), None if no member comes from a calibrated device.
+        """
+        powers = [self._sigs[d].avg_dBm if d in self._sigs else None for d in self.devices]
+        if all(p is None for p in powers):
+            return None
+        return CalibratedMatchedSignal(self.devices, self.ts, self.frequency, self.duration, *powers)
 
     def has_member(
         self,

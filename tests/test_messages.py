@@ -3,7 +3,17 @@ import datetime
 import numpy as np
 import pytest
 
-from radiotracking import MatchedSignal, MatchingSignal, Signal, SpectrumMessage, StateMessage, dB, from_dB
+from radiotracking import (
+    CalibratedMatchedSignal,
+    GainMessage,
+    MatchedSignal,
+    MatchingSignal,
+    Signal,
+    SpectrumMessage,
+    StateMessage,
+    dB,
+    from_dB,
+)
 
 from .conftest import T0
 
@@ -176,3 +186,53 @@ class TestMatchingSignal:
         assert not msig.has_member(make_signal(device="1", duration=0.01), duration_diff=diff)
         # no duration_diff: durations are not compared
         assert msig.has_member(make_signal(device="1", duration=0.03))
+
+
+class TestCalibratedPowers:
+    """Signals of calibrated devices append max, avg and noise in dBm, the existing values stay as they are."""
+
+    def calibrated(self, device="0", avg_dbm=-100.0):
+        return Signal(device, T0, 150_100_000.0, 0.02, -50, -55, 1.0, -80, 25, -90.0, avg_dbm, -115.0)
+
+    def test_uncalibrated_signal_is_unchanged(self, make_signal):
+        sig = make_signal()
+        assert sig.max_dBm is None
+        assert len(sig.as_list) == 9
+        assert sig.header == Signal.header
+
+    def test_calibrated_signal_appends_to_the_end(self, make_signal):
+        plain = make_signal().as_list
+        sig = self.calibrated()
+        assert sig.as_list[:9] == [sig.device, T0, 150_100_000.0, sig.duration, -50, -55, 1.0, -80, 25]
+        assert sig.as_list[9:] == [-90.0, -100.0, -115.0]
+        assert len(plain) == 9
+        assert list(sig.as_dict) == Signal.header_calibrated
+        assert sig.as_dict["max (dBm)"] == -90.0
+
+    def test_matching_signal_gives_a_calibrated_variant(self, make_signal):
+        msig = MatchingSignal(["0", "1", "2"])
+        msig.add_member(self.calibrated("0", -100.0))
+        msig.add_member(make_signal(device="1"))
+        cal = msig.calibrated()
+        assert isinstance(cal, CalibratedMatchedSignal)
+        assert cal.header == ["Time", "Frequency", "Duration", "0", "1", "2"]
+        assert cal.as_list[3:] == [-100.0, None, None]
+        # the plain match is as before
+        assert msig.as_list[3:] == [-55.0, -55.0, None]
+
+    def test_match_without_calibrated_member_has_no_variant(self, make_signal):
+        msig = MatchingSignal(["0", "1"])
+        msig.add_member(make_signal(device="0"))
+        assert msig.calibrated() is None
+
+
+class TestGainMessage:
+    def test_header_matches_values(self):
+        msg = GainMessage("0", T0, 64.5, 15, 14, 7, 0.0, 32.03, -20.0, 76.5)
+        assert len(msg.header) == len(msg.as_list)
+        assert msg.as_dict["Offset (dB)"] == 76.5
+        assert msg.as_dict["Gain (dB)"] == 64.5
+
+    def test_uncalibrated_device_has_no_offset(self):
+        msg = GainMessage("0", T0, 64.5, 15, 14, 7, 0.0, 32.03, None, None)
+        assert msg.as_dict["Offset (dB)"] is None

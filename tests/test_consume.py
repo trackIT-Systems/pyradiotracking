@@ -10,7 +10,7 @@ from unittest import mock
 import cbor2
 import pytest
 
-from radiotracking import MatchingSignal, Signal, SpectrumMessage, StateMessage
+from radiotracking import CalibratedMatchedSignal, GainMessage, MatchingSignal, Signal, SpectrumMessage, StateMessage
 from radiotracking.consume import (
     CSVConsumer,
     MQTTConsumer,
@@ -140,6 +140,29 @@ class TestMQTTConsumer:
         assert "station/radiotracking/matched/json" in topics
         assert "station/radiotracking/state/cbor" in topics
 
+    def test_calibrated_match_and_gain_topics(self, client, consumer):
+        consumer.add(CalibratedMatchedSignal(["0", "1"], T0, 150_100_000.0, 0.02, -100.0, None))
+        consumer.add(GainMessage("1", T0, 64.5, 15, 14, 7, 0.0, 32.03, -20.0, 76.5))
+        topics = self.topics(client)
+        assert "station/radiotracking/calibrated/cbor" in topics
+        assert "station/radiotracking/gain/1/json" in topics
+        assert "station/radiotracking/gain/1/cbor" in topics
+
+    def test_gain_is_retained_and_signals_are_not(self, client, consumer, make_signal):
+        consumer.add(GainMessage("1", T0, None, 15, 14, 7, 0.0, 32.03, None, None))
+        consumer.add(make_signal())
+        retained = {c.args[0]: c.kwargs["retain"] for c in client.publish.call_args_list}
+        assert all(v for t, v in retained.items() if "/gain/" in t)
+        assert not any(v for t, v in retained.items() if "/device/" in t)
+
+    def test_calibrated_signal_publishes_the_appended_values(self, client, consumer):
+        sig = Signal("0", T0, 150_100_000.0, 0.02, -50, -55, 1.0, -80, 25, -90.0, -95.0, -115.0)
+        consumer.add(sig)
+        payloads = {c.args[0].rsplit("/", 1)[1]: c.args[1] for c in client.publish.call_args_list}
+        assert json.loads(payloads["json"])["max (dBm)"] == -90.0
+        assert cbor2.loads(payloads["cbor"], tag_hook=uncborify)[9:] == [-90.0, -95.0, -115.0]
+        assert payloads["csv"].split(";")[9:] == ["-90.0", "-95.0", "-115.0"]
+
     def test_payloads_decode(self, client, consumer, make_signal):
         consumer.add(make_signal())
         payloads = {c.args[0].rsplit("/", 1)[1]: c.args[1] for c in client.publish.call_args_list}
@@ -245,14 +268,18 @@ class TestProcessConnector:
         conn = self.make(tmp_path, csv=True)
         outdir = tmp_path / socket.gethostname() / "radiotracking"
         names = sorted(p.name for p in outdir.iterdir())
-        assert len(names) == 4
+        assert len(names) == 5
         assert any(n.endswith("-matched.csv") for n in names)
         assert any(n.endswith("-state.csv") for n in names)
         assert any(n.endswith("-spectrum.csv") for n in names)
+        assert any(n.endswith("-gain.csv") for n in names)
+        assert not any("calibrated" in n for n in names)
 
         conn.q.put(make_signal())
         conn.step(datetime.timedelta(seconds=2))
-        signal_csv = next(p for p in outdir.iterdir() if not p.name.endswith(("-matched.csv", "-state.csv", "-spectrum.csv")))
+        signal_csv = next(
+            p for p in outdir.iterdir() if not p.name.endswith(("-matched.csv", "-state.csv", "-spectrum.csv", "-gain.csv"))
+        )
         assert len(signal_csv.read_text().splitlines()) == 2
 
     def test_calibration_suffix(self, tmp_path):
@@ -316,3 +343,45 @@ class TestProcessConnector:
             conn.q.put(make_signal())
             conn.step(datetime.timedelta(seconds=2))
         assert len(seen) == 2
+
+
+class TestCalibratedFiles:
+    def make(self, tmp_path, fullscale_dbm):
+        return ProcessConnector(
+            station="st",
+            device=["0", "1"],
+            calibrate=False,
+            sig_stdout=False,
+            match_stdout=False,
+            path=str(tmp_path),
+            csv=True,
+            mqtt=False,
+            fullscale_dbm=fullscale_dbm,
+        )
+
+    def test_calibrated_device_adds_columns_and_a_file(self, tmp_path):
+        conn = self.make(tmp_path, [-20.0, None])
+        outdir = tmp_path / socket.gethostname() / "radiotracking"
+        names = sorted(p.name for p in outdir.iterdir())
+        assert len(names) == 6
+        assert any(n.endswith("-calibrated.csv") for n in names)
+
+        signal_csv = next(p for p in outdir.iterdir() if p.name.count("-") == 2 and p.name.endswith(".csv"))
+        header = signal_csv.read_text().splitlines()[0].split(";")
+        assert header[-3:] == ["max (dBm)", "avg (dBm)", "noise (dBm)"]
+
+        conn.q.put(CalibratedMatchedSignal(["0", "1"], T0, 150_100_000.0, 0.02, -100.0, None))
+        conn.step(datetime.timedelta(seconds=2))
+        matched = next(p for p in outdir.iterdir() if p.name.endswith("-calibrated.csv"))
+        assert matched.read_text().splitlines()[0] == "Time;Frequency;Duration;0;1"
+        assert matched.read_text().splitlines()[1].endswith(";-100.0;")
+
+    def test_gain_message_is_written(self, tmp_path):
+        conn = self.make(tmp_path, [])
+        outdir = tmp_path / socket.gethostname() / "radiotracking"
+        conn.q.put(GainMessage("0", T0, 64.5, 15, 14, 7, 0.0, 32.03, None, None))
+        conn.step(datetime.timedelta(seconds=2))
+        gain = next(p for p in outdir.iterdir() if p.name.endswith("-gain.csv"))
+        lines = gain.read_text().splitlines()
+        assert lines[0].split(";")[:3] == ["Device", "Time", "Gain (dB)"]
+        assert lines[1].split(";")[2] == "64.5"

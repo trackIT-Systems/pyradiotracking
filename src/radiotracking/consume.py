@@ -15,7 +15,15 @@ from typing import List, Optional, Type
 import cbor2 as cbor
 import paho.mqtt.client
 
-from radiotracking import AbstractMessage, MatchingSignal, Signal, SpectrumMessage, StateMessage
+from radiotracking import (
+    AbstractMessage,
+    CalibratedMatchedSignal,
+    GainMessage,
+    MatchingSignal,
+    Signal,
+    SpectrumMessage,
+    StateMessage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -156,12 +164,12 @@ class MQTTConsumer(AbstractConsumer):
         except Exception:
             pass
 
-    def _publish(self, topic: str, payload, qos: int | None = None) -> None:
+    def _publish(self, topic: str, payload, qos: int | None = None, retain: bool = False) -> None:
         if self._shutdown:
             return
         qos = self.mqtt_qos if qos is None else qos
         try:
-            self._last_publish = self.client.publish(topic, payload, qos=qos)
+            self._last_publish = self.client.publish(topic, payload, qos=qos, retain=retain)
         except Exception:
             return
 
@@ -170,12 +178,19 @@ class MQTTConsumer(AbstractConsumer):
         if self._shutdown:
             return
 
+        retain = False
         if isinstance(signal, Signal):
             path = f"{self.prefix}/device/{signal.device}"
         elif isinstance(signal, MatchingSignal):
             path = f"{self.prefix}/matched"
+        elif isinstance(signal, CalibratedMatchedSignal):
+            path = f"{self.prefix}/calibrated"
         elif isinstance(signal, StateMessage):
             path = f"{self.prefix}/state"
+        elif isinstance(signal, GainMessage):
+            # per device and retained: a subscriber learns the gain and the conversion to dBm of every device on connect
+            path = f"{self.prefix}/gain/{signal.device}"
+            retain = True
         elif isinstance(signal, SpectrumMessage):
             # hundreds of values per message: only compact CBOR, the half precision floats take 3 bytes each
             payload_cbor = cbor.dumps(signal.as_list, default=cborify, canonical=True)
@@ -191,20 +206,20 @@ class MQTTConsumer(AbstractConsumer):
             signal.as_dict,
             default=jsonify,
         )
-        self._publish(path + "/json", payload_json)
+        self._publish(path + "/json", payload_json, retain=retain)
 
         # publish csv
         csv_io = StringIO()
         csv.writer(csv_io, dialect="excel", delimiter=";").writerow([csvify(v) for v in signal.as_list])
         payload_csv = csv_io.getvalue().splitlines()[0]
-        self._publish(path + "/csv", payload_csv)
+        self._publish(path + "/csv", payload_csv, retain=retain)
 
         # publish cbor
         payload_cbor = cbor.dumps(
             signal.as_list,
             default=cborify,
         )
-        self._publish(path + "/cbor", payload_cbor)
+        self._publish(path + "/cbor", payload_cbor, retain=retain)
 
         logger.debug(
             f"published via mqtt, json: {len(payload_json)}, csv: {len(payload_csv)}, cbor: {len(payload_cbor)}"
@@ -272,6 +287,8 @@ class ProcessConnector:
         Whether to write CSV files.
     mqtt : bool
         Whether to publish data via MQTT.
+    fullscale_dbm : List[float]
+        The full scale reference of the devices, signals of devices that have one carry calibrated powers (dBm).
     """
 
     def __init__(
@@ -284,6 +301,7 @@ class ProcessConnector:
         path: str,
         csv: bool,
         mqtt: bool,
+        fullscale_dbm: Optional[List[Optional[float]]] = None,
         **kwargs,
     ):
         self.q: multiprocessing.Queue[AbstractMessage] = multiprocessing.Queue()
@@ -309,7 +327,12 @@ class ProcessConnector:
             # create consumer for signals
             signal_csv_path = f"{path}/{station}_{ts:%Y-%m-%dT%H%M%S}"
             signal_csv_path += "_calibration" if calibrate else ""
-            signal_csv_consumer = CSVConsumer(open(f"{signal_csv_path}.csv", "w"), cls=Signal, header=Signal.header)
+            calibrated = any(v is not None for v in fullscale_dbm or [])
+            signal_csv_consumer = CSVConsumer(
+                open(f"{signal_csv_path}.csv", "w"),
+                cls=Signal,
+                header=Signal.header_calibrated if calibrated else Signal.header,
+            )
             self.consumers.append(signal_csv_consumer)
 
             # create consumer for matched signals
@@ -319,6 +342,23 @@ class ProcessConnector:
                 open(f"{matched_csv_path}.csv", "w"), cls=MatchingSignal, header=MatchingSignal(device).header
             )
             self.consumers.append(matched_csv_consumer)
+
+            # create consumers for the powers in dBm and the gain of the devices
+            if calibrated:
+                matched_cal_path = f"{path}/{station}_{ts:%Y-%m-%dT%H%M%S}-calibrated"
+                matched_cal_path += "_calibration" if calibrate else ""
+                self.consumers.append(
+                    CSVConsumer(
+                        open(f"{matched_cal_path}.csv", "w"),
+                        cls=CalibratedMatchedSignal,
+                        header=["Time", "Frequency", "Duration", *device],
+                    )
+                )
+            gain_csv_path = f"{path}/{station}_{ts:%Y-%m-%dT%H%M%S}-gain"
+            gain_csv_path += "_calibration" if calibrate else ""
+            self.consumers.append(
+                CSVConsumer(open(f"{gain_csv_path}.csv", "w"), cls=GainMessage, header=GainMessage.header)
+            )
 
             # create consumer for state information
             state_csv_path = f"{path}/{station}_{ts:%Y-%m-%dT%H%M%S}-state"

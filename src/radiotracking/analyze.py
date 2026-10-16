@@ -14,7 +14,7 @@ import rtlsdr
 import scipy.fft
 import scipy.signal
 
-from radiotracking import Signal, SpectrumMessage, StateMessage, dB, from_dB
+from radiotracking import GainMessage, Signal, SpectrumMessage, StateMessage, dB, from_dB
 
 logger = logging.getLogger(__name__)
 
@@ -317,12 +317,19 @@ class SignalAnalyzer(multiprocessing.Process):
         last_data_ts: Synchronized,
         streaming_ts: Synchronized,
         spectrum_interval_s: float = 300.0,
+        fullscale_dbm: Optional[float] = None,
         **kwargs,
     ):
         super().__init__()
 
         self.device = device
         self.calibration_db = calibration_db
+        self.fullscale_dbm = None if fullscale_dbm is None else float(fullscale_dbm)
+        """Input power at the antenna port (dBm) that gives a full scale tone at 0 dB total gain, see :meth:`set_gain_reference`."""
+        self.total_gain_db: Optional[float] = None
+        """Total gain (LNA + mixer + VGA) in dB, set when the gain stages were set separately."""
+        self._dbm_base: Optional[float] = None
+        """Offset from the dB of the analysis (full scale) to dBm at the antenna port, None if not calibrated."""
         # try to use --device as index
         try:
             self.device_index = int(device)
@@ -402,6 +409,51 @@ class SignalAnalyzer(multiprocessing.Process):
 
     def _finalize_analysis_block_samples(self) -> int:
         return resolve_block_samples(self.sample_rate, self.fft_nperseg, self._analysis_block_samples_configured)
+
+    def tone_offset_db(self) -> float:
+        """
+        Offset from the power density of the spectrogram to the power of a tone in the same bin (dB).
+
+        The density is ``|X|^2 / (fs sum(w^2))``, the power of a tone ``|X|^2 / sum(w)^2``, so the offset is
+        ``10 log10(fs sum(w^2) / sum(w)^2)``: 32.0 dB for a Hamming window of 256 samples at 300 kHz.
+        """
+        win = scipy.signal.get_window(self.fft_window, self.fft_nperseg)
+        return float(dB(self.sample_rate * (win * win).sum() / win.sum() ** 2))
+
+    def set_gain_reference(self, total_gain_db: Optional[float]) -> Optional[float]:
+        """
+        Set the total gain of the device, which makes the signals carry calibrated powers (dBm at the antenna port).
+
+        The powers are ``dB(power) + tone_offset - total_gain + fullscale_dbm``: the tone power in full scale units,
+        referred to the antenna port. For the noise it is the power in the measurement bandwidth of a bin, so that
+        ``max - noise`` is the SNR. Without ``fullscale_dbm`` or a known gain the signals stay uncalibrated.
+
+        Returns
+        -------
+        typing.Optional[float]
+            The offset from the published dBW values to dBm, None if the device is not calibrated.
+        """
+        self.total_gain_db = total_gain_db
+        if self.fullscale_dbm is None or total_gain_db is None:
+            self._dbm_base = None
+            return None
+        self._dbm_base = self.tone_offset_db() - total_gain_db + self.fullscale_dbm
+        return self._dbm_base + self.calibration_db
+
+    def _gain_message(self, ts: datetime.datetime) -> GainMessage:
+        offset = None if self._dbm_base is None else self._dbm_base + self.calibration_db
+        return GainMessage(
+            self.device,
+            ts,
+            self.total_gain_db,
+            self.lna_gain,
+            self.mixer_gain,
+            self.vga_gain,
+            self.calibration_db,
+            self.tone_offset_db(),
+            self.fullscale_dbm,
+            offset,
+        )
 
     def _r82xx_get_lna_gain(self) -> float:
         r82xx_lna_gain_steps = [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13]
@@ -717,6 +769,7 @@ class SignalAnalyzer(multiprocessing.Process):
             ret = rtlsdr.librtlsdr.rtlsdr_set_tuner_gain_ext(sdr.dev_p, self.lna_gain, self.mixer_gain, self.vga_gain)
             if ret == 0:
                 self.gain = self._r82xx_get_gain()
+                self.set_gain_reference(self.gain)
 
                 logger.warning(
                     "Gain set manually (lna_index=%s, mixer_index=%s, vga_index=%s, gain=%s, lna_gain: %s, mixer_gain: %s, vga_gain: %s, sdr.gain: %s)",
@@ -735,6 +788,15 @@ class SignalAnalyzer(multiprocessing.Process):
             logger.warning("Error setting gain manually: %s", err)
             sdr.gain = float(self.gain)
             logger.warning("rtlsdr_set_tuner_gain_ext failed, set gain to %s", sdr.gain)
+
+        if self.fullscale_dbm is not None and self._dbm_base is None:
+            logger.warning(
+                "SDR %s: the gain stages were not set separately, the total gain is unknown and the powers are not "
+                "calibrated (dBm).",
+                self.device,
+            )
+        # publish the gain and the conversion to dBm, also for devices that are not calibrated
+        self.signal_queue.put(self._gain_message(datetime.datetime.now().astimezone()))
 
         self.sdr = sdr
 
@@ -1049,6 +1111,10 @@ class SignalAnalyzer(multiprocessing.Process):
             data = spectrogram[fi][start:end]
 
         avg = np.mean(data)
+        base = self._dbm_base
+        dbm = {}
+        if base is not None:
+            dbm = dict(max_dBm=dB(np.max(data)) + base, avg_dBm=dB(avg) + base, noise_dBm=dB(freq_avg) + base)
         return Signal(
             self.device,
             (ts_start + datetime.timedelta(seconds=start_dt)).astimezone(),
@@ -1059,6 +1125,7 @@ class SignalAnalyzer(multiprocessing.Process):
             np.std(dB(data)),
             dB(freq_avg) - self.calibration_db,
             dB(avg / freq_avg),
+            **dbm,
         )
 
     def extract_signals(

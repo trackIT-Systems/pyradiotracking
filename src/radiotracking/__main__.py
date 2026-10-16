@@ -68,6 +68,16 @@ class Runner:
     sdr_options.add_argument("--mixer-gain", help="mixer_gain index in 0 .. 15", default="14", type=int)
     sdr_options.add_argument("--vga-gain", help="vga_gain index in 0 .. 15", default="15", type=int)
     sdr_options.add_argument(
+        "--fullscale-dbm",
+        help=(
+            "per device: input power (dBm) at the antenna port that gives a full scale tone at 0 dB total gain "
+            "(LNA + mixer + VGA). Devices with a value also publish their powers in dBm, see the Readme"
+        ),
+        default=[],
+        nargs="*",
+        type=float,
+    )
+    sdr_options.add_argument(
         "--tuner-bandwidth",
         help="R820T2 IF filter bandwidth (Hz); 0 = default (2 * sample-rate)",
         default=0,
@@ -162,7 +172,11 @@ class Runner:
     )
 
     def create_and_start(
-        self, device: str, calibration_db: float, sdr_max_restart: int | None = None
+        self,
+        device: str,
+        calibration_db: float,
+        sdr_max_restart: int | None = None,
+        fullscale_dbm: float | None = None,
     ) -> SignalAnalyzer:
         """
         Creates, starts and returns a signal analyzer thread.
@@ -175,6 +189,8 @@ class Runner:
             calibration gain (dB)
         sdr_max_restart: int
             max restart count per SDR device
+        fullscale_dbm: float
+            full scale reference of the device (dBm), None if it is not calibrated
 
         Returns
         -------
@@ -184,6 +200,7 @@ class Runner:
         dargs = argparse.Namespace(**vars(self.args))
         dargs.device = device
         dargs.calibration_db = calibration_db
+        dargs.fullscale_dbm = fullscale_dbm
         if sdr_max_restart is not None:
             dargs.sdr_max_restart = sdr_max_restart
 
@@ -216,8 +233,10 @@ class Runner:
         if self.analyzers:
             logger.critical("")
         logger.info("Starting all analyzers")
-        for device, calibration_db in zip(self.args.device, self.args.calibration):
-            self.analyzers.append(self.create_and_start(device, calibration_db))
+        for device, calibration_db, fullscale_dbm in zip(
+            self.args.device, self.args.calibration, self.fullscale_dbm
+        ):
+            self.analyzers.append(self.create_and_start(device, calibration_db, fullscale_dbm=fullscale_dbm))
 
     def _put_analyzer_stopped_state(self, analyzer: SignalAnalyzer) -> None:
         # Never block here: shutdown may run from a signal handler on the main thread, and
@@ -351,7 +370,9 @@ class Runner:
 
             # create new device
             logger.warning(f"Restarting SDR {analyzer.device}.")
-            new_analyzer = self.create_and_start(analyzer.device, analyzer.calibration_db, analyzer.sdr_max_restart - 1)
+            new_analyzer = self.create_and_start(
+                analyzer.device, analyzer.calibration_db, analyzer.sdr_max_restart - 1, analyzer.fullscale_dbm
+            )
             self.analyzers.remove(analyzer)
             self.analyzers.append(new_analyzer)
 
@@ -411,6 +432,16 @@ class Runner:
             logger.info(f"No calibration values supplied, using {self.args.calibration}")
         elif len(self.args.calibration) != len(self.args.device):
             logger.critical(f"Calibration values {self.args.calibration} do not match devices {self.args.device}.")
+            exit(1)
+
+        # reference for the powers in dBm: for all devices or none, the devices differ by a few dB
+        # (self.args stays as configured, it is exported to a config file again)
+        if len(self.args.fullscale_dbm) == 0:
+            self.fullscale_dbm: list[float | None] = [None] * len(self.args.device)
+        elif len(self.args.fullscale_dbm) == len(self.args.device):
+            self.fullscale_dbm = list(self.args.fullscale_dbm)
+        else:
+            logger.critical(f"Full scale values {self.args.fullscale_dbm} do not match devices {self.args.device}.")
             exit(1)
 
         # warn if long signals can not be detected well with the analysis block

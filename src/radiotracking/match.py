@@ -53,6 +53,10 @@ class SignalMatcher(AbstractConsumer):
 
     def consume(self, msig: MatchingSignal):
         self.signal_queue.put(msig)
+        # the same match with the calibrated powers (dBm), if any of its devices is calibrated
+        calibrated = msig.calibrated()
+        if calibrated is not None:
+            self.signal_queue.put(calibrated)
         self._matched.remove(msig)
 
     def flush(self, now: float | None = None, force: bool = False):

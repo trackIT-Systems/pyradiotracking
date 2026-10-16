@@ -1098,3 +1098,71 @@ class TestZeroNoise:
         an._accumulate_spectrum(np.fft.fftfreq(8, 1 / FS), spec, noise_levels(spec), T0, 40 * NPERSEG)
         msg = an.signal_queue.get_nowait()
         assert all(np.isfinite(v) for v in msg.noise + msg.snr)
+
+
+class TestCalibratedPowers:
+    """Signals of a device with ``fullscale_dbm`` and a known gain carry their power in dBm at the antenna port."""
+
+    GAIN = 64.5
+    FULLSCALE = -20.0
+
+    def burst(self, an, amp=0.1):
+        sigs, _ = detect(an, burst_iq(90112, 0.1, 0.02, amp=amp, noise=1e-5))
+        assert len(sigs) == 1
+        return sigs[0]
+
+    def test_tone_power_is_the_amplitude_referred_to_the_antenna(self):
+        an = make_analyzer(fullscale_dbm=self.FULLSCALE)
+        an.set_gain_reference(self.GAIN)
+        sig = self.burst(an, 0.1)
+        # a tone of amplitude 0.1 has the power -20 dB re full scale, at the antenna port: - gain + full scale reference
+        assert sig.max_dBm == pytest.approx(-20.0 - self.GAIN + self.FULLSCALE, abs=0.1)
+        assert sig.avg_dBm == pytest.approx(sig.max_dBm, abs=0.2)
+
+    def test_snr_is_the_difference_of_max_and_noise(self):
+        an = make_analyzer(fullscale_dbm=self.FULLSCALE)
+        an.set_gain_reference(self.GAIN)
+        sig = self.burst(an)
+        assert sig.max_dBm - sig.noise_dBm == pytest.approx(sig.max - sig.noise, abs=1e-4)
+
+    def test_dbw_values_do_not_change(self):
+        plain = make_analyzer()
+        cal = make_analyzer(fullscale_dbm=self.FULLSCALE)
+        cal.set_gain_reference(self.GAIN)
+        a, b = self.burst(plain), self.burst(cal)
+        assert a.as_list == b.as_list[:9]
+        assert a.max_dBm is None and a.header == Signal.header
+
+    def test_offset_converts_the_published_dbw(self):
+        an = make_analyzer(fullscale_dbm=self.FULLSCALE, calibration_db=3.0)
+        offset = an.set_gain_reference(self.GAIN)
+        sig = self.burst(an)
+        assert sig.max + offset == pytest.approx(sig.max_dBm, abs=1e-4)
+        assert sig.noise + offset == pytest.approx(sig.noise_dBm, abs=1e-4)
+
+    def test_tone_offset_follows_the_window_and_the_bins(self):
+        assert make_analyzer().tone_offset_db() == pytest.approx(32.03, abs=0.01)
+        # the bin width is the same at 1.2 MHz with 1024 bins
+        assert make_analyzer(sample_rate=1_200_000, fft_nperseg=1024).tone_offset_db() == pytest.approx(32.03, abs=0.01)
+
+    def test_without_reference_or_gain_nothing_is_calibrated(self):
+        assert make_analyzer().set_gain_reference(self.GAIN) is None
+        an = make_analyzer(fullscale_dbm=self.FULLSCALE)
+        assert an.set_gain_reference(None) is None
+        assert self.burst(an).max_dBm is None
+
+    def test_gain_message(self):
+        an = make_analyzer(fullscale_dbm=self.FULLSCALE, calibration_db=1.0)
+        an.set_gain_reference(an._r82xx_get_gain())
+        msg = an._gain_message(T0)
+        assert msg.gain_dB == pytest.approx(64.5)
+        assert (msg.lna, msg.mixer, msg.vga) == (15, 14, 7)
+        assert msg.offset_dB == pytest.approx(1.0 + 32.03 - 64.5 + self.FULLSCALE, abs=0.01)
+
+        plain = make_analyzer()._gain_message(T0)
+        assert plain.gain_dB is None and plain.offset_dB is None
+
+    def test_total_gain_of_the_stages(self):
+        gains = {(15, 14, 15): 90.4, (15, 14, 3): 53.1, (15, 14, 7): 64.5, (15, 14, 11): 76.1}
+        for (lna, mixer, vga), total in gains.items():
+            assert make_analyzer(lna_gain=lna, mixer_gain=mixer, vga_gain=vga)._r82xx_get_gain() == pytest.approx(total)

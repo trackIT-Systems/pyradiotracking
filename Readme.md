@@ -40,6 +40,16 @@ Signals are published to:
 - **MQTT** (`--mqtt`), as JSON, CSV and CBOR: `<station>/radiotracking/device/<device>/…` for the signals of each SDR, `…/matched/…` for matched signals and `…/state/…` for SDR states. `…/spectrum/cbor` carries the noise level and SNR of every frequency bin of each SDR every `spectrum_interval_s` (300 s), as compact CBOR only. A second instance on the same broker (e.g. for debugging) needs its own `--mqtt-client-id`, otherwise it takes over the session of the first.
 - **stdout** (`--sig-stdout`, `--match-stdout`), as CSV.
 
+### Powers in dBm
+
+The powers of signals are published in "dBW": dB relative to the full scale of the ADC, as a power density per FFT bin. A tone at full scale peaks at −32.0 dB with the default window (Hamming, 256 samples at 300 kHz, also 1024 bins at 1.2 MHz). They depend on the gain of the SDR, and are only comparable between stations and over time with the same gain settings.
+
+With `fullscale_dbm` set for a device (a list, one value per device) radiotracking also publishes the powers at the antenna port in dBm. `fullscale_dbm` is the input power at the antenna port that gives a full scale tone at 0 dB total gain (LNA + mixer + VGA), a property of the receiver that is measured once, e.g. by feeding a tone of known power at the operating gain: `fullscale_dbm = P_dBm + total gain − (dBW of the peak + tone offset)` (with `calibration = 0`), with the tone offset of 32.0 dB for the default setup (`GainMessage.tone_dB`). The total gain is computed from `lna_gain`, `mixer_gain` and `vga_gain` with the measured step tables of librtlsdr. It is only known if the stages were set separately (the trackIT librtlsdr fork), otherwise the device is not calibrated. `calibration` is a separate offset of the dBW values as before, and is not part of the conversion to dBm.
+
+- `max`, `avg` and `noise` in dBm are appended to the signals of the device (`…/device/<device>/…`, the `max (dBm)`, `avg (dBm)` and `noise (dBm)` columns of the CSV). The noise is the power in the bandwidth a signal is measured in, so that `max − noise` is the SNR. The values in dBW and their order do not change.
+- `…/calibrated/…` is the matched signal with the average powers in dBm of the devices, laid out like `…/matched/…` (CSV: `-calibrated.csv`).
+- `…/gain/<device>/…` is published retained when an analyzer starts, also for devices that are not calibrated (CSV: `-gain.csv`): the total gain, the three gain indexes, `calibration`, `fullscale_dbm` and the **offset** from the published dBW to dBm (`dBm = dBW + offset` for `max`, `avg` and `noise`). With it, values of a station can be converted later without further knowledge of the configuration, and the history of the gain is documented.
+
 ## Development
 
 ```bash
