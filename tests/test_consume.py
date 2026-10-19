@@ -170,13 +170,28 @@ class TestMQTTConsumer:
         assert payloads["csv"].split(";")[0] == "0"
         assert cbor2.loads(payloads["cbor"], tag_hook=uncborify)[0] == "0"
 
-    def test_spectrum_is_published_as_compact_cbor_only(self, client, consumer):
+    def test_spectrum_is_published_in_three_formats(self, client, consumer):
         consumer.add(spectrum())
-        assert self.topics(client) == ["station/radiotracking/spectrum/cbor"]
-        payload = client.publish.call_args.args[1]
+        assert self.topics(client) == [
+            "station/radiotracking/spectrum/json",
+            "station/radiotracking/spectrum/csv",
+            "station/radiotracking/spectrum/cbor",
+        ]
+        payloads = {c.args[0].rsplit("/", 1)[1]: c.args[1] for c in client.publish.call_args_list}
+
+        data = json.loads(payloads["json"])
+        assert data["Device"] == "0"
+        assert data["Noise (dBW)"] == spectrum().noise
+        assert data["SNR (dB)"] == spectrum().snr
+
+        cells = next(csv.reader([payloads["csv"]], delimiter=";"))
+        assert cells[0] == "0"
+        assert len(cells[5].split(",")) == 256
+        assert len(cells[6].split(",")) == 256
+
         # 512 half precision values of 3 bytes, plus the header fields
-        assert len(payload) < 2000
-        row = cbor2.loads(payload, tag_hook=uncborify)
+        assert len(payloads["cbor"]) < 2000
+        row = cbor2.loads(payloads["cbor"], tag_hook=uncborify)
         assert row[:5] == ["0", T0, datetime.timedelta(seconds=300), 150_005_000.0, 1171.875]
         assert row[5] == spectrum().noise
         assert row[6] == spectrum().snr

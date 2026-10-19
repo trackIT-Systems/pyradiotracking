@@ -10,6 +10,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 
 ### Added
 
+- Spectrum messages are also published via MQTT as JSON and CSV (`…/spectrum/json`, `…/spectrum/csv`), next to the CBOR payload
 - `shadow_bins` (default 4): a weaker signal overlapping in time with a louder one is only dropped as its shadow if it is at most this many FFT bins away
 
 ### Fixed

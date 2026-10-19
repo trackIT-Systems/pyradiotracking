@@ -192,11 +192,7 @@ class MQTTConsumer(AbstractConsumer):
             path = f"{self.prefix}/gain/{signal.device}"
             retain = True
         elif isinstance(signal, SpectrumMessage):
-            # hundreds of values per message: only compact CBOR, the half precision floats take 3 bytes each
-            payload_cbor = cbor.dumps(signal.as_list, default=cborify, canonical=True)
-            self._publish(f"{self.prefix}/spectrum/cbor", payload_cbor)
-            logger.debug(f"published spectrum via mqtt, cbor: {len(payload_cbor)}")
-            return
+            path = f"{self.prefix}/spectrum"
         else:
             logger.critical(f"Unknown data type {type(signal)}, skipping.")
             return
@@ -218,6 +214,8 @@ class MQTTConsumer(AbstractConsumer):
         payload_cbor = cbor.dumps(
             signal.as_list,
             default=cborify,
+            # hundreds of values per spectrum message: canonical encoding uses the compact half precision floats
+            canonical=isinstance(signal, SpectrumMessage),
         )
         self._publish(path + "/cbor", payload_cbor, retain=retain)
 

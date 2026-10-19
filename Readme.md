@@ -37,7 +37,7 @@ radiotracking --config etc/radiotracking.ini
 Signals are published to:
 
 - **CSV files** (`--csv`) in `<path>/<hostname>/radiotracking/`: `<station>_<start time>.csv` for signals, plus `-matched.csv`, `-state.csv` and `-spectrum.csv`.
-- **MQTT** (`--mqtt`), as JSON, CSV and CBOR: `<station>/radiotracking/device/<device>/…` for the signals of each SDR, `…/matched/…` for matched signals and `…/state/…` for SDR states. `…/spectrum/cbor` carries the noise level and SNR of every frequency bin of each SDR every `spectrum_interval_s` (300 s), as compact CBOR only. A second instance on the same broker (e.g. for debugging) needs its own `--mqtt-client-id`, otherwise it takes over the session of the first.
+- **MQTT** (`--mqtt`), as JSON, CSV and CBOR: `<station>/radiotracking/device/<device>/…` for the signals of each SDR, `…/matched/…` for matched signals and `…/state/…` for SDR states. `…/spectrum/…` carries the noise level and SNR of every frequency bin of each SDR every `spectrum_interval_s` (300 s). The CBOR form is the compact one (half precision values), JSON and CSV carry the same values as lists. A second instance on the same broker (e.g. for debugging) needs its own `--mqtt-client-id`, otherwise it takes over the session of the first.
 - **stdout** (`--sig-stdout`, `--match-stdout`), as CSV.
 
 ### Powers in dBm
