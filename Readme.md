@@ -14,7 +14,7 @@ Every SDR runs in its own process:
 1. The SDR delivers IQ samples in USB callbacks, which only copy them into a ring buffer.
 2. An analysis thread computes a spectrogram of each analysis block (0.3 s by default, segments of `fft_nperseg` samples).
 3. In each frequency bin, a signal is a run of segments above `signal_threshold_dbw` and `snr_threshold_db` over the noise level, lasting `signal_min_duration_ms` to `signal_max_duration_ms`. The noise level is the median power of the bin over the block, so it is not raised by the signal itself. Signals may span two blocks.
-4. Weaker signals overlapping in time with a stronger one (spectral leakage into neighbouring bins) are dropped as shadows.
+4. Weaker signals overlapping in time with a stronger one within `shadow_bins` (4) bins (spectral leakage into neighbouring bins) are dropped as shadows; further away they are signals of their own.
 
 The main process collects the signals of all SDRs, groups detections of the same transmission on several SDRs into matched signals, watches and restarts stalled SDRs, and publishes everything.
 

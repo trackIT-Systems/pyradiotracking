@@ -423,7 +423,6 @@ class TestShadowFilter:
     def test_empty(self):
         assert make_analyzer().filter_shadow_signals([]) == []
 
-    @pytest.mark.xfail(strict=True, reason="the shadow filter ignores frequency and time alignment, see #6")
     def test_simultaneous_tags_on_distant_frequencies_are_both_detected(self):
         # two tags 85 kHz apart, the weak one starts 5 ms after the strong one; the probability of a pulse overlapping
         # some other tag's pulse grows with the number of tags in range (~4 % per tag at 20 ms pulses every second)
@@ -433,12 +432,20 @@ class TestShadowFilter:
         sigs, _ = detect(an, iq)
         assert sorted(round((s.frequency - CENTER) / BIN_HZ) for s in sigs) == [-30, TONE_BIN]
 
-    def test_frequency_is_not_considered(self, make_signal):
-        # characterization: a weaker signal is dropped whenever a louder one overlaps in time,
-        # even if it is 100 kHz away, i.e. two transmitters sending at the same time are not both detected
+    def test_distant_signal_is_no_shadow(self, make_signal):
+        # two transmitters sending at the same time are both kept, see #6
         loud = make_signal(frequency=150_000_000, max_dbw=-40)
         weak = make_signal(frequency=150_100_000, max_dbw=-60)
-        assert make_analyzer().filter_shadow_signals([loud, weak]) == [loud]
+        assert make_analyzer().filter_shadow_signals([loud, weak]) == [loud, weak]
+
+    def test_shadow_bins_limit(self, make_signal):
+        bin_hz = FS / NPERSEG
+        loud = make_signal(frequency=150_000_000, max_dbw=-40)
+        near = make_signal(frequency=150_000_000 + 4 * bin_hz, max_dbw=-60)
+        far = make_signal(frequency=150_000_000 + 5 * bin_hz, max_dbw=-60)
+        assert make_analyzer().filter_shadow_signals([loud, near, far]) == [loud, far]
+        assert make_analyzer(shadow_bins=5).filter_shadow_signals([loud, near, far]) == [loud]
+        assert make_analyzer(shadow_bins=0).filter_shadow_signals([loud, near, far]) == [loud, near, far]
 
 
 class TestExtractSignals:
@@ -757,7 +764,8 @@ class TestStreaming:
     def an(self):
         import threading
 
-        an = make_analyzer(sdr_timeout_s=5)
+        # hamming leaks further than shadow_bins from a strong burst, see #6
+        an = make_analyzer(sdr_timeout_s=5, fft_window="blackmanharris")
         an.last_state = None
         an.analysis_block_samples = an._finalize_analysis_block_samples()
         an._ring_capacity = int(FS * an.sdr_timeout_s)

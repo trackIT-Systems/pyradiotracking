@@ -143,6 +143,13 @@ class Runner:
         "-w", "--fft-window", help="fft window function", type=literal_eval, default="'hamming'"
     )
     analysis_options.add_argument(
+        "--shadow-bins",
+        help="weaker signals overlapping in time with a louder one are dropped as shadows (spectral leakage) only "
+        "within this many fft bins",
+        default=4,
+        type=int,
+    )
+    analysis_options.add_argument(
         "-t", "--signal-threshold-dbw", help="lower limit for signal intensity (dBW)", type=float, default=-90.0
     )
     analysis_options.add_argument(

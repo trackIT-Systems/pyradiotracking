@@ -312,6 +312,9 @@ class SignalAnalyzer(multiprocessing.Process):
         ``time.monotonic()`` when async USB streaming was entered; 0 until read_bytes_async is about to start.
     spectrum_interval_s: float
         Interval (s of IQ samples) between spectrum messages with the noise and SNR of every frequency; <= 0 disables.
+    shadow_bins: int
+        A weaker signal overlapping in time with a louder one is only dropped as its shadow (spectral leakage) if it is
+        at most this many FFT bins away; further away it is a signal of its own, e.g. another tag.
     """
 
     def __init__(
@@ -341,6 +344,7 @@ class SignalAnalyzer(multiprocessing.Process):
         last_data_ts: Synchronized,
         streaming_ts: Synchronized,
         spectrum_interval_s: float = 300.0,
+        shadow_bins: int = 4,
         fullscale_dbm: Optional[float] = None,
         **kwargs,
     ):
@@ -396,6 +400,7 @@ class SignalAnalyzer(multiprocessing.Process):
         self.sdr_timeout_s = resolve_sdr_timeout(sdr_timeout_s, sdr_callback_length, sample_rate, device)
         self.state_update_s = state_update_s
         self.spectrum_interval_s = spectrum_interval_s
+        self.shadow_bins = shadow_bins
 
         self.signal_queue = signal_queue
         self.last_data_ts = last_data_ts
@@ -985,9 +990,9 @@ class SignalAnalyzer(multiprocessing.Process):
         self.signal_queue.put(signal)
 
     @staticmethod
-    def is_shadow_of(sig: Signal, signals: List[Signal]) -> Union[None, int]:
+    def is_shadow_of(sig: Signal, signals: List[Signal], max_distance_hz: Optional[float] = None) -> Union[None, int]:
         """Compute shadow status of received signals.
-        A shadow signal occurs at the same datetime, but with lower power, often in neighbour frequencies.
+        A shadow signal occurs at the same datetime, but with lower power, in neighbour frequencies.
 
         Parameters
         ----------
@@ -995,6 +1000,8 @@ class SignalAnalyzer(multiprocessing.Process):
             The signal to analyse.
         signals: typing.List[radiotracking.Signal]
             List of signals to compare to.
+        max_distance_hz: typing.Optional[float]
+            Signals further away than this are no shadows of each other; None considers all frequencies.
 
         Returns
         -------
@@ -1011,15 +1018,23 @@ class SignalAnalyzer(multiprocessing.Process):
             if sig.ts + sig.duration < fsig.ts:
                 continue
 
+            # if fsig is too far away, it is no leakage
+            if max_distance_hz is not None and abs(sig.frequency - fsig.frequency) > max_distance_hz:
+                continue
+
             # if fsig is louder, we are a shadow, return index
             if fsig.max > sig.max:
                 return i
 
         return None
 
+    def _shadow_distance_hz(self) -> float:
+        """Distance (Hz) up to which signals are shadows of each other: ``shadow_bins`` bins, with half a bin of tolerance."""
+        return (self.shadow_bins + 0.5) * self.sample_rate / self.fft_nperseg
+
     def filter_shadow_signals(self, signals: List[Signal]):
         """
-        Filters out signals that are too close to each other.
+        Filters out signals that are too close to each other, see ``shadow_bins``.
 
         Parameters
         ----------
@@ -1027,7 +1042,8 @@ class SignalAnalyzer(multiprocessing.Process):
             The signals to filter.
         """
 
-        signals_status = [SignalAnalyzer.is_shadow_of(sig, signals) for sig in signals]
+        max_distance_hz = self._shadow_distance_hz()
+        signals_status = [SignalAnalyzer.is_shadow_of(sig, signals, max_distance_hz) for sig in signals]
         logger.debug("shadow list: %s", signals_status)
 
         return [sig for sig, shadow in zip(signals, signals_status) if shadow is None]
@@ -1209,11 +1225,15 @@ class SignalAnalyzer(multiprocessing.Process):
         ts_us = np.array([datetime.timedelta(seconds=float(t)) // us for t in start_dt], dtype=np.int64)
         end_us = ts_us + np.array([datetime.timedelta(seconds=float(d)) // us for d in duration_s], dtype=np.int64)
 
-        # a signal is a shadow if a louder one overlaps in time (see is_shadow_of), compared in chunks to bound memory
+        # a signal is a shadow if a louder one overlaps in time and is close in frequency (see is_shadow_of),
+        # compared in chunks to bound memory
+        sig_freq = freqs[fi] + self.center_freq
+        max_distance_hz = self._shadow_distance_hz()
         shadow = np.zeros(len(fi), dtype=bool)
         for i in range(0, len(fi), 1024):
             rows = slice(i, i + 1024)
             overlap = ~(ts_us[rows, None] > end_us[None, :]) & ~(end_us[rows, None] < ts_us[None, :])
+            overlap &= np.abs(sig_freq[rows, None] - sig_freq[None, :]) <= max_distance_hz
             shadow[rows] = np.any(overlap & (max_dbw[None, :] > max_dbw[rows, None]), axis=1)
 
         kept = [

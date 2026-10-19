@@ -89,7 +89,8 @@ def test_bursts_across_blocks(amp):
 
 def test_strong_leakage_is_filtered_before_signals_are_created():
     """A tone between two bins leaks into many frequencies, only the strongest signal is created."""
-    an = make_analyzer(signal_threshold_dbw=-130)
+    # hamming leaks further than the default shadow_bins at this level, so all bins count as neighbours here (#6)
+    an = make_analyzer(signal_threshold_dbw=-130, shadow_bins=NPERSEG)
     freqs, times, spec = spectrogram(an, burst_iq(90112, 0.1, 0.02, amp=1.0, tone_bin=43.5))
     kept, n_raw = an.detect_signals(freqs, times, spec, T0)
     assert n_raw > 50

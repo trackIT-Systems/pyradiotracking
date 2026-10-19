@@ -8,6 +8,14 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 
 ## [Unreleased]
 
+### Added
+
+- `shadow_bins` (default 4): a weaker signal overlapping in time with a louder one is only dropped as its shadow if it is at most this many FFT bins away
+
+### Fixed
+
+- The shadow filter dropped a weaker signal overlapping in time with a louder one at any frequency, i.e. a second tag transmitting at the same time was lost (#6). The default window is unchanged, `blackmanharris` (less leakage) needs validation on field recordings
+
 ### Changed
 
 - `vga_gain` defaults to 8 (was 15): the VGA gain of 16.3 dB that the original librtlsdr set, 65.9 dB in total with the default LNA and mixer. 15 (90.4 dB) saturates the ADC on noise. Stations whose `radiotracking.ini` sets `vga_gain` are not affected
