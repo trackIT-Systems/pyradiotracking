@@ -17,11 +17,14 @@ logger = logging.getLogger(__name__)
 # Options that were removed. They are ignored in config files, but a warning is logged if one is set to a value
 # other than empty/false, because the station no longer behaves as configured.
 REMOVED_OPTIONS: Dict[str, str] = {
-    "schedule": "the schedule of operation was removed, radiotracking runs permanently",
     "dashboard": "the dashboard was removed",
     "mqtt_verbose": "log messages are no longer published via MQTT",
     "status_interval": "it was renamed to spectrum_interval_s",
 }
+
+# Removed options that are ignored without a warning: tsconfig still writes the schedule (e.g. ``schedule = ['']``),
+# and radiotracking running permanently is what the operator expects.
+IGNORED_OPTIONS: Tuple[str, ...] = ("schedule",)
 
 # Sections of removed features, their keys are ignored without a warning about unknown options.
 REMOVED_SECTIONS: Tuple[str, ...] = ("dashboard",)
@@ -100,7 +103,7 @@ class ArgConfParser(ArgumentParser):
             logger.warning("Config file '%s' could not be read, using defaults and command line arguments", path)
 
         conf_dict = {}
-        known = {"config", *REMOVED_OPTIONS}
+        known = {"config", *REMOVED_OPTIONS, *IGNORED_OPTIONS}
 
         for group in self._action_groups:
             # skip untitled groups

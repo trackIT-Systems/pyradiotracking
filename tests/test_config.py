@@ -154,21 +154,15 @@ def test_arg_conf_parser_without_config_dest():
 
 
 class TestRemovedOptions:
-    def test_empty_schedule_of_old_configs_is_ignored_silently(self, tmp_path, caplog):
-        cfg = write(tmp_path, "[optional arguments]\nschedule = []\n")
-        with caplog.at_level(logging.WARNING):
-            args = parser.parse_args(["--config", cfg])
-        assert "schedule" not in vars(args)
-        assert caplog.text == ""
-
     @pytest.mark.parametrize("section", ["options", "optional arguments"])
-    def test_configured_schedule_is_ignored_with_a_warning(self, tmp_path, caplog, section):
-        cfg = write(tmp_path, f"[{section}]\nschedule = ['10:00-11:00']\nstation = 'x'\n")
+    @pytest.mark.parametrize("value", ["[]", "['']", "['10:00-11:00']"])
+    def test_schedule_is_ignored_silently(self, tmp_path, caplog, section, value):
+        cfg = write(tmp_path, f"[{section}]\nschedule = {value}\nstation = 'x'\n")
         with caplog.at_level(logging.WARNING):
             args = parser.parse_args(["--config", cfg])
         assert args.station == "x"
         assert "schedule" not in vars(args)
-        assert "Ignoring 'schedule'" in caplog.text
+        assert caplog.text == ""
 
     @pytest.mark.parametrize("value,warns", [("0", False), ("1", True)])
     def test_mqtt_verbose_of_old_configs(self, tmp_path, caplog, value, warns):
