@@ -124,17 +124,30 @@ class MQTTConsumer(AbstractConsumer):
         )
         # bounds the memory while the broker is unreachable, newer messages are dropped beyond it
         self.client.max_queued_messages_set(MQTT_MAX_QUEUED_MESSAGES)
+        self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
+        # a lost connection is logged once when it is lost and once when it works again, the repeats at debug
+        self._connection_lost = False
         self.client.connect(mqtt_host, mqtt_port, keepalive=mqtt_keepalive)
         self.client.loop_start()
+
+    def _on_connect(self, client, userdata, flags, reason_code, properties):
+        if reason_code.is_failure or not self._connection_lost:
+            return
+        self._connection_lost = False
+        logger.info("MQTT connection works again")
 
     def _on_disconnect(self, client, userdata, flags, reason_code, properties):
         """Log unexpected disconnects: paho reconnects, but they lose time and may point to a duplicate client id."""
         if self._shutdown or not reason_code.is_failure:
             return
+        if self._connection_lost:
+            logger.debug("MQTT connection lost again (%s)", reason_code)
+            return
+        self._connection_lost = True
         logger.warning(
             "MQTT connection lost (%s), reconnecting. If this repeats, another client may be using the client id '%s' "
-            "(e.g. a second radiotracking instance), set a different one with --mqtt-client-id.",
+            "(e.g. a second radiotracking instance), set a different one with --mqtt-client-id",
             reason_code,
             self.client_id,
         )
@@ -194,7 +207,7 @@ class MQTTConsumer(AbstractConsumer):
         elif isinstance(signal, SpectrumMessage):
             path = f"{self.prefix}/spectrum"
         else:
-            logger.critical(f"Unknown data type {type(signal)}, skipping.")
+            logger.error("Unknown data type %s, skipping", type(signal))
             return
 
         # publish json
@@ -220,7 +233,7 @@ class MQTTConsumer(AbstractConsumer):
         self._publish(path + "/cbor", payload_cbor, retain=retain)
 
         logger.debug(
-            f"published via mqtt, json: {len(payload_json)}, csv: {len(payload_csv)}, cbor: {len(payload_cbor)}"
+            "Published via MQTT, json: %s, csv: %s, cbor: %s", len(payload_json), len(payload_csv), len(payload_cbor)
         )
 
 
@@ -258,7 +271,7 @@ class CSVConsumer(AbstractConsumer):
             self.writer.writerow([csvify(v) for v in signal.as_list])
             self.out.flush()
 
-            logger.debug(f"published {signal} via csv")
+            logger.debug("Published %s via CSV", signal)
         else:
             pass
 
@@ -413,5 +426,5 @@ class ProcessConnector:
                 c.add(sig)
             except Exception:
                 # one failing consumer must not keep the others from seeing the message
-                logger.exception(f"{type(c).__name__} failed to consume {sig}")
+                logger.exception("%s failed to consume %s", type(c).__name__, sig)
         return True

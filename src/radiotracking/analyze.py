@@ -16,6 +16,7 @@ import scipy.fft
 import scipy.signal
 
 from radiotracking import GainMessage, Signal, SpectrumMessage, StateMessage, dB, from_dB
+from radiotracking.journal import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +193,7 @@ def resolve_callback_length(configured: int | None = None) -> int:
     rounded = max(1, round(configured / CALLBACK_SAMPLES_MULTIPLE)) * CALLBACK_SAMPLES_MULTIPLE
     if rounded != configured:
         logger.warning(
-            "sdr_callback_length %d is not a multiple of %d samples (librtlsdr would ignore it), using %d.",
+            "sdr_callback_length %d is not a multiple of %d samples (librtlsdr would ignore it), using %d",
             configured,
             CALLBACK_SAMPLES_MULTIPLE,
             rounded,
@@ -221,7 +222,7 @@ def resolve_sdr_timeout(sdr_timeout_s: int, callback_length: int, sample_rate: f
     if sdr_timeout_s >= minimum:
         return sdr_timeout_s
     logger.warning(
-        "SDR %s: sdr_timeout_s (%s s) is too short for a callback of %s samples (%.3f s), using %s s.",
+        "SDR %s: sdr_timeout_s (%s s) is too short for a callback of %s samples (%.3f s), using %s s",
         device,
         sdr_timeout_s,
         callback_length,
@@ -252,7 +253,7 @@ def warn_if_block_too_short(block_samples: int, sample_rate: float, signal_max_d
     logger.warning(
         "The analysis block (%d samples, %.3f s) is shorter than %d times signal_max_duration_ms (%g ms, i.e. %.3f s). "
         "Long signals will need a higher SNR to be detected, or can not be detected at all. "
-        "Increase analysis_block_samples or lower signal_max_duration_ms.",
+        "Increase analysis_block_samples or lower signal_max_duration_ms",
         block_samples,
         block_s,
         RECOMMENDED_BLOCK_TO_MAX_DURATION,
@@ -361,14 +362,14 @@ class SignalAnalyzer(multiprocessing.Process):
         # try to use --device as index
         try:
             self.device_index = int(device)
-            logger.info(f"Using '{device}' as device index.")
+            logger.info("Using '%s' as device index", device)
         except ValueError:
             # try to use --device as serial numbers
             try:
                 self.device_index = rtlsdr.rtlsdr.RtlSdr.get_device_index_by_serial(device)
-                logger.info(f"Using '{device}' as serial number (index: {self.device_index}).")
+                logger.info("Using '%s' as serial number (index: %s)", device, self.device_index)
             except rtlsdr.rtlsdr.LibUSBError:
-                logger.warning(f"Device '{device}' could was not found, aborting.")
+                logger.error("Device '%s' was not found, aborting", device)
                 sys.exit(1)
 
         self.sample_rate = sample_rate
@@ -564,7 +565,7 @@ class SignalAnalyzer(multiprocessing.Process):
             self.update_state(ts_recv, StateMessage.State.RUNNING)
         # monotonic: the watchdog must not be affected by steps of the wall clock (e.g. by NTP)
         self.last_data_ts.value = time.monotonic()
-        logger.info("SDR %s received data at %s", self.device, ts_recv)
+        logger.debug("SDR %s received data at %s", self.device, ts_recv)
 
         assert self._ring_cv is not None
         assert self._consumer_stop is not None
@@ -574,7 +575,7 @@ class SignalAnalyzer(multiprocessing.Process):
             if not self._ring_push(buffer):
                 logger.critical(
                     "SDR %s sample ring overflow (capacity %s samples ~%.3f s, occupied %s, "
-                    "incoming %s, analysis_block_samples=%s, sdr_callback_length=%s). Stopping.",
+                    "incoming %s, analysis_block_samples=%s, sdr_callback_length=%s). Stopping",
                     self.device,
                     self._ring_capacity,
                     self._ring_capacity / self.sample_rate,
@@ -649,20 +650,25 @@ class SignalAnalyzer(multiprocessing.Process):
             buffer_len_dt = datetime.timedelta(seconds=len(chunk) / self.sample_rate)
             with self._ring_cv:
                 backlog_s = self._ring_count / self.sample_rate
-            logger.info(
-                f"SDR {self.device} analyzed {len(chunk)} samples, "
-                f"filtered {n_kept} / {n_raw} signals, "
-                f"chunk len: {buffer_len_dt.total_seconds() * 1000:.1f} ms, "
-                f"ring backlog: {backlog_s:.3f} s, "
-                f"compute: {sum(timings.values()) * 1000:.1f} ms"
+            logger.debug(
+                "SDR %s analyzed %s samples, filtered %s / %s signals, chunk len: %.1f ms, ring backlog: %.3f s, "
+                "compute: %.1f ms",
+                self.device,
+                len(chunk),
+                n_kept,
+                n_raw,
+                buffer_len_dt.total_seconds() * 1000,
+                backlog_s,
+                sum(timings.values()) * 1000,
             )
 
             logger.debug(
-                f"timings - spectogram: {timings['spectrogram'] * 1000:.1f} ms, "
-                + f"noise: {timings['noise'] * 1000:.1f} ms, "
-                + f"extract: {timings['extract'] * 1000:.1f} ms, "
-                + f"spectrum: {timings['spectrum'] * 1000:.1f} ms, "
-                + f"consume: {timings['consume'] * 1000:.1f} ms"
+                "Timings - spectrogram: %.1f ms, noise: %.1f ms, extract: %.1f ms, spectrum: %.1f ms, consume: %.1f ms",
+                timings["spectrogram"] * 1000,
+                timings["noise"] * 1000,
+                timings["extract"] * 1000,
+                timings["spectrum"] * 1000,
+                timings["consume"] * 1000,
             )
 
     def _analyze_block(
@@ -726,9 +732,7 @@ class SignalAnalyzer(multiprocessing.Process):
         signal.signal(signal.SIGTERM, self.handle_signal)
         signal.signal(signal.SIGINT, self.handle_signal)
 
-        # logging levels increase in steps of 10, start with warning
-        logging_level = max(0, logging.WARN - (self.verbose * 10))
-        logging.basicConfig(level=logging_level)
+        setup_logging(self.verbose)
 
         # setup sdr
         try:
@@ -736,7 +740,7 @@ class SignalAnalyzer(multiprocessing.Process):
             sdr.sample_rate = self.sample_rate
             # update configured sample rate with technically possible rate computed by library
             if self.sample_rate != sdr.sample_rate:
-                logger.info("adjusting sample rate according to hardware properties: %s", sdr.sample_rate)
+                logger.info("Adjusting sample rate according to hardware properties: %s", sdr.sample_rate)
                 self.sample_rate = sdr.sample_rate
             sdr.center_freq = self.center_freq
 
@@ -749,12 +753,12 @@ class SignalAnalyzer(multiprocessing.Process):
                 sdr.bandwidth,
             )
         except rtlsdr.rtlsdr.LibUSBError as err:
-            logger.warning("SDR %s: could not open or configure (%s).", self.device, err)
+            logger.error("SDR %s: could not open or configure (%s)", self.device, err)
             sys.exit(1)
 
         # terminated while opening the device: do not start streaming
         if self._stop_requested:
-            logger.warning("SDR %s: terminated during setup.", self.device)
+            logger.info("SDR %s: terminated during setup", self.device)
             sdr.close()
             return
 
@@ -769,7 +773,7 @@ class SignalAnalyzer(multiprocessing.Process):
                 raise RuntimeError(f"rtlsdr_set_tuner_gain_ext returned {ret}")
             self.gain = self._r82xx_get_gain()
             self.set_gain_reference(self.gain)
-            logger.warning(
+            logger.info(
                 "SDR %s: gain set manually: LNA index %s (%.1f dB) + mixer index %s (%.1f dB) + VGA index %s (%.1f dB) "
                 "= %.1f dB (librtlsdr reports %.1f dB, LNA and mixer only)",
                 self.device,
@@ -788,7 +792,7 @@ class SignalAnalyzer(multiprocessing.Process):
             logger.warning(
                 "SDR %s: the gain stages can not be set separately (%s), set the gain to %s dB instead. The total gain "
                 "is unknown, the VGA is left to librtlsdr: fixed at 16.3 dB by the original librtlsdr, regulated by "
-                "the RTL2832 AGC by the community and trackIT forks.",
+                "the RTL2832 AGC by the community and trackIT forks",
                 self.device,
                 err,
                 self.gain,
@@ -797,7 +801,7 @@ class SignalAnalyzer(multiprocessing.Process):
         if self.fullscale_dbm is not None and self._dbm_base is None:
             logger.warning(
                 "SDR %s: the gain stages were not set separately, the total gain is unknown and the powers are not "
-                "calibrated (dBm).",
+                "calibrated (dBm)",
                 self.device,
             )
         # publish the gain and the conversion to dBm, also for devices that are not calibrated
@@ -849,7 +853,7 @@ class SignalAnalyzer(multiprocessing.Process):
             # librtlsdr may report the cancellation of the transfers as error
             if not self._stop_requested:
                 raise
-            logger.info("SDR %s: streaming ended after stop request (%s).", self.device, err)
+            logger.info("SDR %s: streaming ended after stop request (%s)", self.device, err)
         finally:
             if self._consumer_stop is not None:
                 self._consumer_stop.set()
@@ -859,7 +863,7 @@ class SignalAnalyzer(multiprocessing.Process):
             if self._consumer_thread is not None:
                 self._consumer_thread.join(timeout=10.0)
                 if self._consumer_thread.is_alive():
-                    logger.warning("SDR %s: analysis consumer thread did not exit within timeout.", self.device)
+                    logger.warning("SDR %s: analysis consumer thread did not exit within timeout", self.device)
             if self.sdr is not None:
                 self.sdr.close()
 
@@ -879,12 +883,12 @@ class SignalAnalyzer(multiprocessing.Process):
             if self._last_recv_wall is not None:
                 ago = f"{(datetime.datetime.now() - self._last_recv_wall).total_seconds():.3f} s ago"
             logger.warning(
-                "SDR %s received SIGALRM, last USB callback data %s.",
+                "SDR %s received SIGALRM, last USB callback data %s",
                 self.device,
                 ago,
             )
         elif sig == signal.SIGTERM:
-            logger.warning("SDR %s received SIGTERM, terminating.", self.device)
+            logger.info("SDR %s received SIGTERM, terminating", self.device)
         elif sig == signal.SIGINT:
             return
 
@@ -1044,7 +1048,7 @@ class SignalAnalyzer(multiprocessing.Process):
 
         max_distance_hz = self._shadow_distance_hz()
         signals_status = [SignalAnalyzer.is_shadow_of(sig, signals, max_distance_hz) for sig in signals]
-        logger.debug("shadow list: %s", signals_status)
+        logger.debug("Shadow list: %s", signals_status)
 
         return [sig for sig, shadow in zip(signals, signals_status) if shadow is None]
 

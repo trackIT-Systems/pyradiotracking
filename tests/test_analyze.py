@@ -1248,7 +1248,7 @@ class TestGainSetup:
         return configure
 
     def test_stages_are_set_and_logged(self, setup, caplog):
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             an = setup(vga_gain=7)
         assert setup.calls[0][1:] == (15, 14, 7)
         assert an.total_gain_db == pytest.approx(64.5)

@@ -218,6 +218,17 @@ class TestMQTTConsumer:
         assert "--mqtt-client-id" in caplog.text
         assert consumer.client_id in caplog.text
 
+    def test_lost_connection_is_logged_once_and_its_recovery(self, consumer, caplog):
+        failure, success = mock.Mock(is_failure=True), mock.Mock(is_failure=False)
+        with caplog.at_level(logging.INFO):
+            consumer._on_connect(None, None, None, success, None)
+            consumer._on_disconnect(None, None, None, failure, None)
+            consumer._on_connect(None, None, None, failure, None)
+            consumer._on_disconnect(None, None, None, failure, None)
+            consumer._on_connect(None, None, None, success, None)
+        assert [r.levelno for r in caplog.records] == [logging.WARNING, logging.INFO]
+        assert caplog.records[1].getMessage() == "MQTT connection works again"
+
     def test_regular_disconnect_is_not_logged(self, consumer, caplog):
         with caplog.at_level(logging.WARNING):
             consumer._on_disconnect(None, None, None, mock.Mock(is_failure=False), None)

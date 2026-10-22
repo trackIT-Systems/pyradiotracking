@@ -97,7 +97,7 @@ class ArgConfParser(ArgumentParser):
         # values are python literals, '%' must not be interpreted
         config = ConfigParser(interpolation=None)
         if not config.read(path):
-            logger.warning(f"Config file '{path}' could not be read, using defaults and command line arguments.")
+            logger.warning("Config file '%s' could not be read, using defaults and command line arguments", path)
 
         conf_dict = {}
         known = {"config", *REMOVED_OPTIONS}
@@ -124,9 +124,9 @@ class ArgConfParser(ArgumentParser):
             for key in config[section]:
                 if key in REMOVED_OPTIONS:
                     if self._parse_value(path, section, key, config[section][key]):
-                        logger.warning(f"Ignoring '{key}' in [{section}] of '{path}': {REMOVED_OPTIONS[key]}.")
+                        logger.warning("Ignoring '%s' in [%s] of '%s': %s", key, section, path, REMOVED_OPTIONS[key])
                 elif key not in known and section not in REMOVED_SECTIONS:
-                    logger.warning(f"Ignoring unknown option '{key}' in [{section}] of '{path}'.")
+                    logger.warning("Ignoring unknown option '%s' in [%s] of '%s'", key, section, path)
 
         return conf_dict
 

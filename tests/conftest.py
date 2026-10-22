@@ -40,6 +40,16 @@ from radiotracking import Signal  # noqa: E402
 T0 = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def keep_test_logging(monkeypatch):
+    """The runner and the analyzers replace the root handlers, which would remove the handler of caplog."""
+    import radiotracking.__main__
+    import radiotracking.analyze
+
+    monkeypatch.setattr(radiotracking.__main__, "setup_logging", lambda verbose=0: None)
+    monkeypatch.setattr(radiotracking.analyze, "setup_logging", lambda verbose=0: None)
+
+
 @pytest.fixture
 def make_signal():
     """Factory for Signals with sensible defaults."""

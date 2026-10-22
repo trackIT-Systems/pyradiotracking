@@ -578,19 +578,19 @@ class MatchingSignal(MatchedSignal):
 
         # if freq (including bw) out of range of freq
         if sig.frequency - bandwidth / 2 > self.frequency:
-            logger.debug(f"1 {sig.frequency - bandwidth / 2} > {self.frequency}")
+            logger.debug("1 %s > %s", sig.frequency - bandwidth / 2, self.frequency)
             return False
         if sig.frequency + bandwidth / 2 < self.frequency:
-            logger.debug(f"2 {sig.frequency + bandwidth / 2} < {self.frequency}")
+            logger.debug("2 %s < %s", sig.frequency + bandwidth / 2, self.frequency)
             return False
 
         # if start (minus diff) is after end
         if sig.ts - time_diff > (self.ts + self.duration):
-            logger.debug(f"3 {sig.ts - time_diff} > {(self.ts + self.duration)}")
+            logger.debug("3 %s > %s", sig.ts - time_diff, self.ts + self.duration)
             return False
         # if end (plus diff) is before start
         if (sig.ts + sig.duration) + time_diff < self.ts:
-            logger.debug(f"4 {(sig.ts + sig.duration) + time_diff} < {self.ts}")
+            logger.debug("4 %s < %s", sig.ts + sig.duration + time_diff, self.ts)
             return False
 
         # if no duration_diff is present, don't match for it
@@ -612,11 +612,11 @@ class MatchingSignal(MatchedSignal):
             The signal to add.
         """
         if sig.device in self._sigs:
-            logger.info(f"{sig} already contained in {self}")
+            logger.debug("%s already contained in %s", sig, self)
             if self._sigs[sig.device].avg < sig.avg:
-                logger.info(f"Replacing initial {self._sigs[sig.device]}")
+                logger.debug("Replacing initial %s", self._sigs[sig.device])
                 self._sigs[sig.device] = sig
             else:
-                logger.info(f"Keeping initial {self._sigs[sig.device]}")
+                logger.debug("Keeping initial %s", self._sigs[sig.device])
         else:
             self._sigs[sig.device] = sig

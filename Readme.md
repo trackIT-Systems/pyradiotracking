@@ -40,6 +40,10 @@ Signals are published to:
 - **MQTT** (`--mqtt`), as JSON, CSV and CBOR: `<station>/radiotracking/device/<device>/…` for the signals of each SDR, `…/matched/…` for matched signals and `…/state/…` for SDR states. `…/spectrum/…` carries the noise level and SNR of every frequency bin of each SDR every `spectrum_interval_s` (300 s). The CBOR form is the compact one (half precision values), JSON and CSV carry the same values as lists. A second instance on the same broker (e.g. for debugging) needs its own `--mqtt-client-id`, otherwise it takes over the session of the first.
 - **stdout** (`--sig-stdout`, `--match-stdout`), as CSV.
 
+### Logging
+
+radiotracking logs at `WARNING`, at `INFO` with `-v` and at `DEBUG` with `-vv`. Under systemd it writes to the journal directly, with the priority, the identifier `radiotracking` and the source location as separate fields, following the [tsOS logging convention](https://github.com/trackIT-Systems/tsOS-base/blob/main/docs/logging.md): `journalctl -u radiotracking -p warning` shows warnings and worse, `-o verbose` the source location (`CODE_FILE`, `CODE_LINE`, `CODE_FUNC`). On a terminal it writes `<LEVEL> <logger>: <message>` to stderr. A working station logs nothing periodic above `DEBUG`.
+
 ### Powers in dBm
 
 The powers of signals are published in "dBW": dB relative to the full scale of the ADC, as a power density per FFT bin. A tone at full scale peaks at −32.0 dB with the default window (Hamming, 256 samples at 300 kHz, also 1024 bins at 1.2 MHz). They depend on the gain of the SDR, and are only comparable between stations and over time with the same gain settings.

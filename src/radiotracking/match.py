@@ -78,7 +78,7 @@ class SignalMatcher(AbstractConsumer):
 
         for msig in list(self._matched):
             if force or msig._created + self.matching_timeout.total_seconds() < now:
-                logger.info(f"Flushing {msig}.")
+                logger.debug("Flushing %s", msig)
                 self.consume(msig)
 
     def add(self, signal: AbstractMessage):
@@ -97,7 +97,7 @@ class SignalMatcher(AbstractConsumer):
         # iterate on a copy of the list to enable removing of elements
         for msig in list(self._matched):
             if msig.ts < now - self.matching_timeout:
-                logger.info(f"Timed out {msig}, consuming.")
+                logger.debug("Timed out %s, consuming", msig)
                 self.consume(msig)
                 continue
 
@@ -108,11 +108,11 @@ class SignalMatcher(AbstractConsumer):
                 duration_diff=self.matching_duration_diff,
             ):
                 msig.add_member(signal)
-                logger.debug(f"Found member of {msig}")
+                logger.debug("Found member of %s", msig)
                 return
 
         msig = MatchingSignal(self.devices)
         msig._created = time.monotonic()
         msig.add_member(signal)
-        logger.debug(f"Created new {msig}")
+        logger.debug("Created new %s", msig)
         self._matched.append(msig)

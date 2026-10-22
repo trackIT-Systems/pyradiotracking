@@ -18,9 +18,10 @@ from radiotracking import StateMessage
 from radiotracking.analyze import SignalAnalyzer, resolve_block_samples, warn_if_block_too_short
 from radiotracking.config import ArgConfParser
 from radiotracking.consume import ProcessConnector
+from radiotracking.journal import setup_logging
 from radiotracking.match import SignalMatcher
 
-logger = logging.getLogger("radiotracking")
+logger = logging.getLogger(__name__)
 
 # Floor for waiting on RtlSdr() open/config before treating the child as stalled.
 # --sdr-timeout-s is typically a few seconds and is too short for USB init.
@@ -251,9 +252,9 @@ class Runner:
                 cpu_core = analyzer.device_index % multiprocessing.cpu_count()
                 out = subprocess.check_output(["taskset", "-p", "-c", str(cpu_core), str(analyzer.pid)])
                 for line in out.decode().splitlines():
-                    logger.info(f"SDR {analyzer.device} CPU affinity: {line}")
+                    logger.info("SDR %s CPU affinity: %s", analyzer.device, line)
             except FileNotFoundError:
-                logger.warning(f"SDR {analyzer.device} CPU affinity: failed to configure")
+                logger.warning("SDR %s CPU affinity: taskset not found", analyzer.device)
 
         return analyzer
 
@@ -262,7 +263,8 @@ class Runner:
         Start all requested analyzer threads.
         """
         if self.analyzers:
-            logger.critical("")
+            logger.error("Analyzers are already running, not starting them again")
+            return
         logger.info("Starting all analyzers")
         for device, calibration_db, fullscale_dbm in zip(
             self.args.device, self.args.calibration, self.fullscale_dbm
@@ -281,12 +283,12 @@ class Runner:
             analyzer.signal_queue.put(StateMessage(analyzer.device, ts, StateMessage.State.STOPPED), block=False)
         except queue.Full:
             logger.warning(
-                "SDR %s: signal queue is full; could not enqueue STOPPED state before shutdown.",
+                "SDR %s: signal queue is full, could not enqueue STOPPED state before shutdown",
                 analyzer.device,
             )
         except (BrokenPipeError, OSError) as err:
             logger.warning(
-                "SDR %s: could not enqueue STOPPED state (%s).",
+                "SDR %s: could not enqueue STOPPED state (%s)",
                 analyzer.device,
                 err,
             )
@@ -313,7 +315,7 @@ class Runner:
         if analyzer.exitcode is not None:
             return False
         logger.warning(
-            "SDR %s did not exit within %.1fs after SIGTERM; sending SIGKILL.",
+            "SDR %s did not exit within %.1fs after SIGTERM, sending SIGKILL",
             analyzer.device,
             join_timeout_s,
         )
@@ -321,7 +323,7 @@ class Runner:
         analyzer.join(timeout=5.0)
         if analyzer.exitcode is None:
             logger.critical(
-                "SDR %s still alive after SIGKILL (pid=%s).",
+                "SDR %s still alive after SIGKILL (pid=%s)",
                 analyzer.device,
                 analyzer.pid,
             )
@@ -364,7 +366,7 @@ class Runner:
                     if now_ts - analyzer.started_at <= startup_grace_s:
                         continue
                     logger.warning(
-                        "SDR %s did not start USB streaming within %.1fs; timed out.",
+                        "SDR %s did not start USB streaming within %.1fs, timed out",
                         analyzer.device,
                         startup_grace_s,
                     )
@@ -372,15 +374,15 @@ class Runner:
                     if now_ts - streaming_ts <= analyzer.sdr_timeout_s:
                         continue
                     logger.warning(
-                        "SDR %s never received USB data after streaming started; timed out.",
+                        "SDR %s never received USB data after streaming started, timed out",
                         analyzer.device,
                     )
                 elif last_data_ts > now_ts - analyzer.sdr_timeout_s:
-                    logger.info("SDR %s received last data %.3f s ago", analyzer.device, now_ts - last_data_ts)
+                    logger.debug("SDR %s received last data %.3f s ago", analyzer.device, now_ts - last_data_ts)
                     continue
                 else:
                     logger.warning(
-                        "SDR %s received last data %.3f s ago; timed out.", analyzer.device, now_ts - last_data_ts
+                        "SDR %s received last data %.3f s ago, timed out", analyzer.device, now_ts - last_data_ts
                     )
 
                 # kill timed out analyzer
@@ -389,18 +391,18 @@ class Runner:
 
             else:
                 # e.g. an exception in the analyzer, which did not report its STOPPED state
-                logger.info(f"SDR {analyzer.device} process is dead.")
+                logger.warning("SDR %s process is dead", analyzer.device)
                 self._put_analyzer_stopped_state(analyzer)
 
             # check if SDR allows further restarts; if not, the whole station terminates on purpose: the SDRs of a station
             # cover different directions, and data with a direction missing can't be used for bearings
             if analyzer.sdr_max_restart <= 0:
-                logger.critical(f"SDR {analyzer.device} is dead and beyond restart count, terminating.")
+                logger.critical("SDR %s is dead and beyond restart count, terminating", analyzer.device)
                 self.terminate(signal.SIGTERM)
                 break
 
             # create new device
-            logger.warning(f"Restarting SDR {analyzer.device}.")
+            logger.warning("Restarting SDR %s", analyzer.device)
             new_analyzer = self.create_and_start(
                 analyzer.device, analyzer.calibration_db, analyzer.sdr_max_restart - 1, analyzer.fullscale_dbm
             )
@@ -413,7 +415,7 @@ class Runner:
         """
         if getattr(self, "_terminate_in_progress", False):
             logger.warning(
-                "Shutdown already in progress; ignoring nested %s.",
+                "Shutdown already in progress, ignoring nested %s",
                 signal.Signals(sig).name,
             )
             return
@@ -423,12 +425,12 @@ class Runner:
             # then stops the consumers; publishing via MQTT does not block, so a stuck broker cannot block this path
             self.running = False
 
-            logger.warning(f"Caught {signal.Signals(sig).name}, terminating {len(self.analyzers)} analyzers.")
+            logger.info("Caught %s, terminating %s analyzers", signal.Signals(sig).name, len(self.analyzers))
 
             # Stop the analyzers, and wait for completion
             self.stop_analyzers()
 
-            logger.warning("Termination complete.")
+            logger.info("Termination complete")
         finally:
             self._terminate_in_progress = False
         # os.kill(os.getpid(), signal.SIGKILL)
@@ -437,38 +439,35 @@ class Runner:
         self.running = True
         self._terminate_in_progress = False
         self.analyzers: List[SignalAnalyzer] = []
+        # reading the config file logs already, before -v is known
+        setup_logging()
         self.args = Runner.parser.parse_args()
-
-        # logging levels increase in steps of 10, start with warning
-        logging_level = max(0, logging.WARN - (self.args.verbose * 10))
-        logging_stderr = logging.StreamHandler()
-        logging_stderr.setLevel(logging_level)
-        logging.basicConfig(level=logging.DEBUG, handlers=[logging_stderr])
+        setup_logging(self.args.verbose)
 
         signal.signal(signal.SIGINT, lambda sig, _: self.terminate(sig))
         signal.signal(signal.SIGTERM, lambda sig, _: self.terminate(sig))
 
         # a device can only be opened once, a duplicate would use up its restarts and then terminate the station
         if len(self.args.device) == 0:
-            logger.critical("No devices configured.")
+            logger.critical("No devices configured")
             exit(1)
         duplicates = sorted({d for d in self.args.device if self.args.device.count(d) > 1})
         if duplicates:
-            logger.critical(f"Devices {duplicates} are configured more than once in {self.args.device}.")
+            logger.critical("Devices %s are configured more than once in %s", duplicates, self.args.device)
             exit(1)
 
         # the gain indexes must exist, the analyzers would otherwise run with a gain nobody configured
         for name in ("lna_gain", "mixer_gain", "vga_gain"):
             if not 0 <= getattr(self.args, name) <= 15:
-                logger.critical(f"{name} {getattr(self.args, name)} is not an index in 0 .. 15.")
+                logger.critical("%s %s is not an index in 0 .. 15", name, getattr(self.args, name))
                 exit(1)
 
         # initialize calibration parameter if unset
         if len(self.args.calibration) == 0:
             self.args.calibration = [0.0] * len(self.args.device)
-            logger.info(f"No calibration values supplied, using {self.args.calibration}")
+            logger.info("No calibration values supplied, using %s", self.args.calibration)
         elif len(self.args.calibration) != len(self.args.device):
-            logger.critical(f"Calibration values {self.args.calibration} do not match devices {self.args.device}.")
+            logger.critical("Calibration values %s do not match devices %s", self.args.calibration, self.args.device)
             exit(1)
 
         # reference for the powers in dBm: for all devices or none, the devices differ by a few dB
@@ -478,7 +477,7 @@ class Runner:
         elif len(self.args.fullscale_dbm) == len(self.args.device):
             self.fullscale_dbm = list(self.args.fullscale_dbm)
         else:
-            logger.critical(f"Full scale values {self.args.fullscale_dbm} do not match devices {self.args.device}.")
+            logger.critical("Full scale values %s do not match devices %s", self.args.fullscale_dbm, self.args.device)
             exit(1)
 
         # warn if long signals can not be detected well with the analysis block
@@ -508,7 +507,7 @@ class Runner:
         """
         Run the main loop of the application.
         """
-        logger.warning("Running radiotracking...")
+        logger.info("Running radiotracking")
 
         self.start_analyzers()
 
