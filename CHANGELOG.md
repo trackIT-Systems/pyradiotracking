@@ -19,7 +19,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 
 ### Changed
 
-- Logging follows the [tsOS logging convention](https://github.com/trackIT-Systems/tsOS-base/blob/main/docs/logging.md): under systemd, the runner and every analyzer process write to the journal over its native protocol, with the priority, `SYSLOG_IDENTIFIER=radiotracking` and the source location (`CODE_*`), instead of plain stderr lines stored as `info`. On a terminal the lines are `<LEVEL> <logger>: <message>`
+- Logging follows the [tsOS logging convention](https://github.com/trackIT-Systems/tsOS-base/blob/main/docs/logging.md): under systemd, the runner and every analyzer process write to the journal through `python3-systemd`'s `JournalHandler` (Debian package, tsOS-base#44), with the priority, `SYSLOG_IDENTIFIER=radiotracking` and the source location (`CODE_*`), instead of plain stderr lines stored as `info`. On a terminal, or without `python3-systemd` (macOS), the lines are `<LEVEL> <logger>: <message>`
 - Nothing periodic is logged above `DEBUG`: the watchdog's "received last data", the per-callback and per-block analyzer lines and the per-signal matching lines moved from `INFO` to `DEBUG`. Start and stop events ("Running radiotracking", the gain line, SIGTERM) moved from `WARNING` to `INFO`; an SDR that could not be opened or found is an `ERROR`, an analyzer process that died a `WARNING`
 - A lost MQTT connection is logged once as a warning and once when it works again (`INFO`), repeats at `DEBUG`
 - Log messages are formatted by `logging` (no f-strings) and have no trailing period; the runner logs as `radiotracking.__main__` (was `radiotracking`)
