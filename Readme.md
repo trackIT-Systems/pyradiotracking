@@ -52,7 +52,7 @@ With `fullscale_dbm` set for a device (a list, one value per device) radiotracki
 
 - `max`, `avg` and `noise` in dBm are appended to the signals of the device (`…/device/<device>/…`, the `max (dBm)`, `avg (dBm)` and `noise (dBm)` columns of the CSV). The noise is the power in the bandwidth a signal is measured in, so that `max − noise` is the SNR. The values in dBW and their order do not change.
 - `…/calibrated/…` is the matched signal with the average powers in dBm of the devices, laid out like `…/matched/…` (CSV: `-calibrated.csv`).
-- `…/gain/<device>/…` is published retained when an analyzer starts, also for devices that are not calibrated (CSV: `-gain.csv`): the total gain, the three gain indexes, `calibration`, `fullscale_dbm` and the **offset** from the published dBW to dBm (`dBm = dBW + offset` for `max`, `avg` and `noise`). With it, values of a station can be converted later without further knowledge of the configuration, and the history of the gain is documented.
+- `…/gain/<device>/…` is published (not retained, with its time) when an analyzer starts, also for devices that are not calibrated (CSV: `-gain.csv`): the total gain, the three gain indexes, `calibration`, `fullscale_dbm` and the **offset** from the published dBW to dBm (`dBm = dBW + offset` for `max`, `avg` and `noise`). With it, values of a station can be converted later without further knowledge of the configuration, and the history of the gain is documented.
 
 ## Development
 

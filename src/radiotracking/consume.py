@@ -128,6 +128,8 @@ class MQTTConsumer(AbstractConsumer):
         self.client.on_disconnect = self._on_disconnect
         # a lost connection is logged once when it is lost and once when it works again, the repeats at debug
         self._connection_lost = False
+        # devices whose gain topics, retained by earlier versions, this process has cleared
+        self._gain_cleared: set[str] = set()
         self.client.connect(mqtt_host, mqtt_port, keepalive=mqtt_keepalive)
         self.client.loop_start()
 
@@ -191,7 +193,6 @@ class MQTTConsumer(AbstractConsumer):
         if self._shutdown:
             return
 
-        retain = False
         if isinstance(signal, Signal):
             path = f"{self.prefix}/device/{signal.device}"
         elif isinstance(signal, MatchingSignal):
@@ -201,9 +202,14 @@ class MQTTConsumer(AbstractConsumer):
         elif isinstance(signal, StateMessage):
             path = f"{self.prefix}/state"
         elif isinstance(signal, GainMessage):
-            # per device and retained: a subscriber learns the gain and the conversion to dBm of every device on connect
+            # per device, not retained: a retained message reaches every new subscriber again, and a consumer that
+            # stamps messages on arrival would store it as new. The record carries its time. Earlier versions
+            # retained it, so the retained message is cleared (empty payload) once per device.
             path = f"{self.prefix}/gain/{signal.device}"
-            retain = True
+            if signal.device not in self._gain_cleared:
+                self._gain_cleared.add(signal.device)
+                for fmt in ("json", "csv", "cbor"):
+                    self._publish(f"{path}/{fmt}", b"", retain=True)
         elif isinstance(signal, SpectrumMessage):
             path = f"{self.prefix}/spectrum"
         else:
@@ -215,13 +221,13 @@ class MQTTConsumer(AbstractConsumer):
             signal.as_dict,
             default=jsonify,
         )
-        self._publish(path + "/json", payload_json, retain=retain)
+        self._publish(path + "/json", payload_json)
 
         # publish csv
         csv_io = StringIO()
         csv.writer(csv_io, dialect="excel", delimiter=";").writerow([csvify(v) for v in signal.as_list])
         payload_csv = csv_io.getvalue().splitlines()[0]
-        self._publish(path + "/csv", payload_csv, retain=retain)
+        self._publish(path + "/csv", payload_csv)
 
         # publish cbor
         payload_cbor = cbor.dumps(
@@ -230,7 +236,7 @@ class MQTTConsumer(AbstractConsumer):
             # hundreds of values per spectrum message: canonical encoding uses the compact half precision floats
             canonical=isinstance(signal, SpectrumMessage),
         )
-        self._publish(path + "/cbor", payload_cbor, retain=retain)
+        self._publish(path + "/cbor", payload_cbor)
 
         logger.debug(
             "Published via MQTT, json: %s, csv: %s, cbor: %s", len(payload_json), len(payload_csv), len(payload_cbor)

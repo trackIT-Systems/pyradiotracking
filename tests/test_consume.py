@@ -148,12 +148,24 @@ class TestMQTTConsumer:
         assert "station/radiotracking/gain/1/json" in topics
         assert "station/radiotracking/gain/1/cbor" in topics
 
-    def test_gain_is_retained_and_signals_are_not(self, client, consumer, make_signal):
+    def test_nothing_is_retained_but_the_clear_of_the_gain(self, client, consumer, make_signal):
         consumer.add(GainMessage("1", T0, None, 15, 14, 7, 0.0, 32.03, None, None))
         consumer.add(make_signal())
-        retained = {c.args[0]: c.kwargs["retain"] for c in client.publish.call_args_list}
-        assert all(v for t, v in retained.items() if "/gain/" in t)
-        assert not any(v for t, v in retained.items() if "/device/" in t)
+        retained = [(c.args[0], c.args[1]) for c in client.publish.call_args_list if c.kwargs.get("retain")]
+        assert retained == [
+            ("station/radiotracking/gain/1/json", b""),
+            ("station/radiotracking/gain/1/csv", b""),
+            ("station/radiotracking/gain/1/cbor", b""),
+        ]
+
+    def test_gain_is_cleared_once_per_device(self, client, consumer):
+        for device in ("1", "1", "2"):
+            consumer.add(GainMessage(device, T0, None, 15, 14, 7, 0.0, 32.03, None, None))
+        cleared = [c.args[0] for c in client.publish.call_args_list if c.kwargs.get("retain")]
+        assert cleared.count("station/radiotracking/gain/1/cbor") == 1
+        assert cleared.count("station/radiotracking/gain/2/cbor") == 1
+        published = [c.args[0] for c in client.publish.call_args_list if not c.kwargs.get("retain")]
+        assert published.count("station/radiotracking/gain/1/cbor") == 2
 
     def test_calibrated_signal_publishes_the_appended_values(self, client, consumer):
         sig = Signal("0", T0, 150_100_000.0, 0.02, -50, -55, 1.0, -80, 25, -90.0, -95.0, -115.0)
