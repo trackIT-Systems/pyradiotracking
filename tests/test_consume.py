@@ -62,9 +62,14 @@ class TestSerialization:
         assert decoded[3] == sig.duration
         assert decoded[2] == sig.frequency
 
-    def test_cbor_state_message_has_the_lifecycle_only(self):
+    def test_cbor_state_message_without_levels(self):
         raw = cbor2.dumps(StateMessage("0", T0, StateMessage.State.RUNNING).as_list, default=cborify)
-        assert cbor2.loads(raw, tag_hook=uncborify) == ["0", T0, 1]
+        assert cbor2.loads(raw, tag_hook=uncborify) == ["0", T0, 1, None, None, None, None]
+
+    def test_cbor_state_message_with_levels(self):
+        msg = StateMessage("0", T0, 1, peak_db=-70.5, rms_db=-98.0, snr_db=31.5, noise_db=-102.0)
+        raw = cbor2.dumps(msg.as_list, default=cborify)
+        assert cbor2.loads(raw, tag_hook=uncborify) == ["0", T0, 1, -70.5, -98.0, 31.5, -102.0]
 
     def test_csvify_joins_lists(self):
         assert csvify([-100.004, 3.5]) == "-100.00,3.50"

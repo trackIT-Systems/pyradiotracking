@@ -62,8 +62,16 @@ class TestStateMessage:
 
     def test_as_list_uses_state_value(self):
         msg = StateMessage("0", T0, StateMessage.State.STARTED)
-        assert msg.as_list == ["0", T0, 2]
+        assert msg.as_list == ["0", T0, 2, None, None, None, None]
         assert list(msg.as_dict) == StateMessage.header
+        assert not msg.has_levels
+
+    def test_levels(self):
+        msg = StateMessage("0", T0, 1, peak_db=-70.5, rms_db=-98.0, snr_db=31.5, noise_db=-102.0)
+        assert msg.has_levels
+        assert msg.as_list == ["0", T0, 1, -70.5, -98.0, 31.5, -102.0]
+        assert StateMessage.header[3:] == ["Peak (dBW)", "RMS (dBW)", "SNR (dB)", "Noise (dBW)"]
+        assert "noise -102.0 dBW" in repr(msg)
 
 
 class TestSpectrumMessage:

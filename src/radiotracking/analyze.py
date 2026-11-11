@@ -313,6 +313,9 @@ class SignalAnalyzer(multiprocessing.Process):
         ``time.monotonic()`` when async USB streaming was entered; 0 until read_bytes_async is about to start.
     spectrum_interval_s: float
         Interval (s of IQ samples) between spectrum messages with the noise and SNR of every frequency; <= 0 disables.
+    levels_interval_s: float
+        Interval (s of IQ samples) between state messages with the levels of the whole band (peak, RMS, noise, SNR);
+        <= 0 disables.
     shadow_bins: int
         A weaker signal overlapping in time with a louder one is only dropped as its shadow (spectral leakage) if it is
         at most this many FFT bins away; further away it is a signal of its own, e.g. another tag.
@@ -345,6 +348,7 @@ class SignalAnalyzer(multiprocessing.Process):
         last_data_ts: Synchronized,
         streaming_ts: Synchronized,
         spectrum_interval_s: float = 300.0,
+        levels_interval_s: float = 300.0,
         shadow_bins: int = 4,
         fullscale_dbm: Optional[float] = None,
         **kwargs,
@@ -401,6 +405,7 @@ class SignalAnalyzer(multiprocessing.Process):
         self.sdr_timeout_s = resolve_sdr_timeout(sdr_timeout_s, sdr_callback_length, sample_rate, device)
         self.state_update_s = state_update_s
         self.spectrum_interval_s = spectrum_interval_s
+        self.levels_interval_s = levels_interval_s
         self.shadow_bins = shadow_bins
 
         self.signal_queue = signal_queue
@@ -436,6 +441,12 @@ class SignalAnalyzer(multiprocessing.Process):
         self._spectrum_peak: Optional[np.ndarray] = None
         self._spectrum_ts: datetime.datetime | None = None
         self._spectrum_samples: int = 0
+
+        self._levels_peak: float = 0.0
+        self._levels_mean: list[float] = []
+        self._levels_noise: list[float] = []
+        self._levels_ts: datetime.datetime | None = None
+        self._levels_samples: int = 0
 
     def _finalize_analysis_block_samples(self) -> int:
         return resolve_block_samples(self.sample_rate, self.fft_nperseg, self._analysis_block_samples_configured)
@@ -684,7 +695,7 @@ class SignalAnalyzer(multiprocessing.Process):
         ts_start: datetime.datetime
             start of the block
         spectrum: bool
-            whether the block is added to the spectrum message
+            whether the block is added to the spectrum and the levels (not the first block of a stream)
 
         Returns
         -------
@@ -706,6 +717,7 @@ class SignalAnalyzer(multiprocessing.Process):
 
         if spectrum:
             self._accumulate_spectrum(freqs, spectrogram, noise, ts_start, len(chunk))
+            self._accumulate_levels(spectrogram, noise, ts_start, len(chunk))
         bench_spectrum = time.perf_counter()
 
         for s in signals:
@@ -839,6 +851,7 @@ class SignalAnalyzer(multiprocessing.Process):
         self._spectrum_peak = None
         self._spectrum_ts = None
         self._spectrum_samples = 0
+        self._reset_levels()
 
         self._consumer_thread = threading.Thread(target=self._analysis_consumer_loop, name=f"SDR{self.device}-analyze")
         self._consumer_thread.start()
@@ -923,6 +936,75 @@ class SignalAnalyzer(multiprocessing.Process):
             state,
         )
         self.signal_queue.put(self.last_state)
+
+    def _reset_levels(self):
+        self._levels_peak = 0.0
+        self._levels_mean = []
+        self._levels_noise = []
+        self._levels_ts = None
+        self._levels_samples = 0
+
+    def _accumulate_levels(
+        self, spectrogram: np.ndarray, noise: np.ndarray, ts_start: datetime.datetime, n_samples: int
+    ):
+        """
+        Collect the levels of the whole band of a block, publish them in a state message per interval.
+
+        The interval is counted in IQ samples, like the spectrum's. Per interval:
+
+        - Peak: the strongest power of any frequency and time.
+        - RMS: the mean power of the band, signals included (as tsOS-vhf 2026).
+        - Noise: the median of the blocks' noise levels, each the median over the frequencies of the noise level of
+          every frequency (:func:`noise_levels`); neither raised by signals nor by a few interfered frequencies.
+        - SNR: Peak over Noise.
+
+        The state message is stamped with the end of the interval and carries the lifecycle state at that time, so
+        that its time and state agree with the lifecycle messages around it. It is sent in addition to the lifecycle
+        updates and does not reset their ``state_update_s`` timer.
+
+        Parameters
+        ----------
+        spectrogram: np.ndarray
+            2d spectrogram data of the block
+        noise: np.ndarray
+            noise power of every frequency of the block, see :func:`noise_levels`
+        ts_start: datetime.datetime
+            start of the block
+        n_samples: int
+            IQ samples of the block
+        """
+        if self.levels_interval_s <= 0:
+            return
+
+        if self._levels_ts is None:
+            self._levels_ts = ts_start
+        self._levels_peak = max(self._levels_peak, float(np.max(spectrogram)))
+        self._levels_mean.append(float(np.mean(spectrogram)))
+        self._levels_noise.append(float(np.median(noise)))
+        self._levels_samples += n_samples
+
+        if self._levels_samples < self.levels_interval_s * self.sample_rate:
+            return
+
+        # an SDR delivering constant samples has no power at all, which must not give infinite values (as noise_levels)
+        tiny = float(np.finfo(np.float32).tiny)
+        peak_db = float(dB(max(self._levels_peak, tiny))) - self.calibration_db
+        rms_db = float(dB(max(float(np.mean(self._levels_mean)), tiny))) - self.calibration_db
+        noise_db = float(dB(float(np.median(self._levels_noise)))) - self.calibration_db
+        lifecycle = self.last_state.state if self.last_state else StateMessage.State.RUNNING
+        end = self._levels_ts + datetime.timedelta(seconds=self._levels_samples / self.sample_rate)
+        self.signal_queue.put(
+            StateMessage(
+                self.device,
+                end.astimezone(),
+                lifecycle,
+                peak_db=peak_db,
+                rms_db=rms_db,
+                snr_db=peak_db - noise_db,
+                noise_db=noise_db,
+            )
+        )
+        self._reset_levels()
 
     def _accumulate_spectrum(
         self, freqs: np.ndarray, spectrogram: np.ndarray, noise: np.ndarray, ts_start: datetime.datetime, n_samples: int

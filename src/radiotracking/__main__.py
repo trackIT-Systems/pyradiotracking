@@ -136,6 +136,12 @@ class Runner:
         type=float,
         help="interval for publishing the noise and SNR per frequency (s); <=0 disables",
     )
+    sdr_options.add_argument(
+        "--levels-interval-s",
+        default=300.0,
+        type=float,
+        help="interval for publishing the peak, RMS, noise and SNR of the whole band in state messages (s); <=0 disables",
+    )
 
     # analysis options
     analysis_options = parser.add_argument_group("analysis")

@@ -62,6 +62,31 @@ class AbstractMessage(ABC):
 
 
 class StateMessage(AbstractMessage):
+    """
+    The lifecycle state of an SDR, and the levels of its whole band.
+
+    Lifecycle changes (and their repetition every ``state_update_s``) carry no levels. Every
+    ``levels_interval_s`` of IQ samples a state message with the band levels of that interval is sent,
+    see :meth:`radiotracking.analyze.SignalAnalyzer._accumulate_levels`.
+
+    Parameters
+    ----------
+    device: str
+        The SDR device.
+    ts: datetime.datetime
+        The time of the state; for levels the end of the interval they cover.
+    state: StateMessage.State | int | str
+        The lifecycle state.
+    peak_db: float | None
+        The strongest power of any frequency in the interval (dBW).
+    rms_db: float | None
+        The mean power of the band in the interval, signals included (dBW).
+    snr_db: float | None
+        Peak over noise (dB).
+    noise_db: float | None
+        The noise level: the median over the frequencies of the noise level of every frequency (dBW).
+    """
+
     class State(Enum):
         STOPPED = 0
         RUNNING = 1
@@ -72,6 +97,10 @@ class StateMessage(AbstractMessage):
         device: str,
         ts: datetime.datetime,
         state: Union["StateMessage.State", int, str],
+        peak_db: Optional[float] = None,
+        rms_db: Optional[float] = None,
+        snr_db: Optional[float] = None,
+        noise_db: Optional[float] = None,
     ):
         super().__init__()
 
@@ -82,8 +111,17 @@ class StateMessage(AbstractMessage):
             self.state = state
         else:
             self.state = StateMessage.State(int(state))
+        self.peak_db: Optional[float] = None if peak_db is None else float(peak_db)
+        self.rms_db: Optional[float] = None if rms_db is None else float(rms_db)
+        self.snr_db: Optional[float] = None if snr_db is None else float(snr_db)
+        self.noise_db: Optional[float] = None if noise_db is None else float(noise_db)
 
-    header: List[str] = ["Device", "Time", "State"]
+    # the first six columns are those of tsOS-vhf 2026.5.1 - 2026.9.1, Noise was appended
+    header: List[str] = ["Device", "Time", "State", "Peak (dBW)", "RMS (dBW)", "SNR (dB)", "Noise (dBW)"]
+
+    @property
+    def has_levels(self) -> bool:
+        return self.peak_db is not None
 
     @property
     def as_list(self) -> List:
@@ -91,9 +129,18 @@ class StateMessage(AbstractMessage):
             self.device,
             self.ts,
             self.state.value,
+            self.peak_db,
+            self.rms_db,
+            self.snr_db,
+            self.noise_db,
         ]
 
     def __repr__(self) -> str:
+        if self.has_levels:
+            return (
+                f"StateMessage({self.device}, {self.ts}, {self.state}, peak {self.peak_db:.1f} dBW, "
+                f"rms {self.rms_db:.1f} dBW, noise {self.noise_db:.1f} dBW, snr {self.snr_db:.1f} dB)"
+            )
         return f"StateMessage({self.device}, {self.ts}, {self.state})"
 
 

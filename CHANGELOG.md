@@ -10,6 +10,7 @@ Releases up to 0.3.0 were not tagged consistently; the entries for those version
 
 ### Added
 
+- State messages carry the levels of the whole band again, every `--levels-interval-s` (default 300 s) of IQ samples, independent of the spectrum: `Peak (dBW)` (strongest power), `RMS (dBW)` (mean power, signals included), `SNR (dB)` (Peak over Noise) and the new `Noise (dBW)` (median over the frequencies of the per-frequency noise level the detection uses). The first six columns are those of tsOS-vhf 2026.5.1 – 2026.9.1, which computed SNR as Peak over RMS; every state row now has seven columns, lifecycle rows leave the levels empty. A level row is stamped with the end of its interval and carries the lifecycle state at that time; it does not delay the lifecycle updates. Consumers that need the levels no longer depend on forwarding the spectrum
 - Spectrum messages are also published via MQTT as JSON and CSV (`…/spectrum/json`, `…/spectrum/csv`), next to the CBOR payload
 - `shadow_bins` (default 4): a weaker signal overlapping in time with a louder one is only dropped as its shadow if it is at most this many FFT bins away
 

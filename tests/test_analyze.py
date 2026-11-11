@@ -52,6 +52,7 @@ def make_analyzer(**over):
         last_data_ts=multiprocessing.Value("d", 0.0),
         streaming_ts=multiprocessing.Value("d", 0.0),
         spectrum_interval_s=0,
+        levels_interval_s=0,
     )
     kw.update(over)
     return SignalAnalyzer(**kw)
@@ -1089,6 +1090,101 @@ class TestSampleClock:
         # e.g. NTP correcting the clock by a second after 15 s
         error = self.run(make_analyzer(), 60, step_at=15, step_s=1.0)
         assert abs(error) < 0.01
+
+
+class TestLevels:
+    BLOCK = 30208  # 0.1 s
+
+    def run(self, an, iq, lifecycle=None):
+        """Analyse consecutive blocks like the consumer loop does, return the state messages with levels."""
+        from radiotracking.analyze import noise_levels
+
+        if lifecycle is not None:
+            an.last_state = StateMessage("0", T0, lifecycle)
+        for i in range(len(iq) // self.BLOCK):
+            _, _, spec = spectrogram(an, iq[i * self.BLOCK : (i + 1) * self.BLOCK])
+            ts = T0 + datetime.timedelta(seconds=i * self.BLOCK / FS)
+            an._accumulate_levels(spec, noise_levels(spec), ts, self.BLOCK)
+        out = []
+        while not an.signal_queue.empty():
+            msg = an.signal_queue.get_nowait()
+            if isinstance(msg, StateMessage) and msg.has_levels:
+                out.append(msg)
+        return out
+
+    def analyzer(self, **over):
+        # an interval of three blocks
+        return make_analyzer(levels_interval_s=3 * self.BLOCK / FS, **over)
+
+    def test_one_message_per_complete_interval(self):
+        assert self.run(self.analyzer(), burst_iq(2 * self.BLOCK, 0.0, 0.0)) == []
+        msgs = self.run(self.analyzer(), burst_iq(7 * self.BLOCK, 0.0, 0.0))
+        # stamped with the end of the interval: a row's time and lifecycle state agree with the lifecycle messages
+        interval = datetime.timedelta(seconds=3 * self.BLOCK / FS)
+        assert [m.ts for m in msgs] == [T0 + interval, T0 + 2 * interval]
+        assert all(m.ts.tzinfo is not None for m in msgs)
+
+    def test_noise_only(self):
+        (msg,) = self.run(self.analyzer(), burst_iq(3 * self.BLOCK, 0.0, 0.0))
+        # complex noise of 2e-6 power spread over the band: the noise level is that of a bin, the RMS its mean
+        assert msg.noise_db == pytest.approx(dB(2e-6 / FS), abs=0.5)
+        assert msg.rms_db == pytest.approx(msg.noise_db, abs=0.5)
+        # the maximum of ~90000 exponentially distributed powers is ~11 dB above their mean
+        assert 8 < msg.snr_db < 16
+        assert msg.snr_db == pytest.approx(msg.peak_db - msg.noise_db)
+
+    def test_a_burst_raises_peak_and_snr_but_not_the_noise(self):
+        quiet = self.run(self.analyzer(), burst_iq(3 * self.BLOCK, 0.0, 0.0))[0]
+        loud = self.run(self.analyzer(), burst_iq(3 * self.BLOCK, 0.13, 0.02, amp=1.0))[0]
+        assert loud.noise_db == pytest.approx(quiet.noise_db, abs=0.5)
+        assert loud.peak_db > quiet.peak_db + 50 and loud.snr_db > 60
+        # the RMS includes the burst
+        assert loud.rms_db > quiet.rms_db + 10
+
+    def test_calibration_shifts_the_levels_but_not_the_snr(self):
+        iq = burst_iq(3 * self.BLOCK, 0.13, 0.02)
+        (plain,) = self.run(self.analyzer(), iq)
+        (calibrated,) = self.run(self.analyzer(calibration_db=6.0), iq)
+        for level in ("peak_db", "rms_db", "noise_db"):
+            assert getattr(plain, level) - getattr(calibrated, level) == pytest.approx(6.0)
+        assert calibrated.snr_db == pytest.approx(plain.snr_db)
+
+    def test_carries_the_lifecycle_state(self):
+        (msg,) = self.run(self.analyzer(), burst_iq(3 * self.BLOCK, 0.0, 0.0), StateMessage.State.STARTED)
+        assert msg.state is StateMessage.State.STARTED
+        (msg,) = self.run(self.analyzer(), burst_iq(3 * self.BLOCK, 0.0, 0.0))
+        assert msg.state is StateMessage.State.RUNNING
+
+    def test_does_not_throttle_the_lifecycle_updates(self):
+        an = self.analyzer(state_update_s=300)
+        an.update_state(T0, StateMessage.State.RUNNING)
+        first = an.last_state
+        assert len(self.run(an, burst_iq(3 * self.BLOCK, 0.0, 0.0))) == 1
+        assert an.last_state is first
+        an.update_state(T0 + datetime.timedelta(seconds=10), StateMessage.State.RUNNING)
+        assert an.signal_queue.empty()
+        an.update_state(T0 + datetime.timedelta(seconds=301), StateMessage.State.RUNNING)
+        assert an.signal_queue.get_nowait().state is StateMessage.State.RUNNING
+
+    def test_disabled(self):
+        assert self.run(make_analyzer(levels_interval_s=0), burst_iq(6 * self.BLOCK, 0.0, 0.0)) == []
+
+    def test_silent_sdr_has_finite_levels(self):
+        an = make_analyzer(levels_interval_s=1e-9)
+        spec = np.zeros((8, 40), dtype=np.float32)
+        from radiotracking.analyze import noise_levels
+
+        an._accumulate_levels(spec, noise_levels(spec), T0, 40 * NPERSEG)
+        msg = an.signal_queue.get_nowait()
+        assert all(np.isfinite(v) for v in (msg.peak_db, msg.rms_db, msg.noise_db, msg.snr_db))
+
+    def test_the_consumer_loop_sends_levels_and_skips_the_first_block(self, monkeypatch):
+        an = self.analyzer()
+        calls = []
+        monkeypatch.setattr(an, "_accumulate_levels", lambda *a: calls.append(a[2]))
+        an._analyze_block(burst_iq(self.BLOCK, 0.0, 0.0), T0, spectrum=False)
+        an._analyze_block(burst_iq(self.BLOCK, 0.0, 0.0), T0, spectrum=True)
+        assert calls == [T0]
 
 
 class TestZeroNoise:
